@@ -1,0 +1,2 @@
+# Optional browser checks; Chrome is installed separately.
+playwright==1.65.1

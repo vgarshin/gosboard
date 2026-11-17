@@ -1,0 +1,27 @@
+{$SITE_ADDRESS:aitalks.tech} {
+    encode zstd gzip
+    header {
+        X-Content-Type-Options nosniff
+        Referrer-Policy no-referrer
+        X-Frame-Options DENY
+        Permissions-Policy "microphone=(self), camera=()"
+        Content-Security-Policy "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; media-src 'self' blob:; connect-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'"
+    }
+    handle /api/* {
+        request_body {
+            max_size 11MB
+        }
+        reverse_proxy backend:8000 {
+            header_up Host {host}
+        }
+    }
+    handle {
+        root * /srv
+        try_files {path} /index.html
+        file_server
+    }
+}
+
+{$WWW_ADDRESS:http://localhost:8089} {
+    redir https://aitalks.tech{uri} permanent
+}

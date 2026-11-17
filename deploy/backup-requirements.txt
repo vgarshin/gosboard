@@ -1,0 +1,2 @@
+# Dedicated host backup venv only; not a chat-server dependency.
+boto3==1.44.2

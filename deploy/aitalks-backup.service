@@ -1,0 +1,18 @@
+[Unit]
+Description=AI Talks backup with isolated restore check and verified off-VM upload
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+UMask=0077
+WorkingDirectory=/opt/aitalks/app
+EnvironmentFile=/etc/aitalks/production.env
+UnsetEnvironment=YANDEX_OAUTH_CLIENT_ID YANDEX_OAUTH_CLIENT_SECRET YANDEX_CLOUD_FOLDER_ID YANDEX_AI_API_KEY YANDEX_AI_API_KEY_ID YANDEX_SPEECHKIT_API_KEY YANDEX_SPEECHKIT_API_KEY_ID ALLOWED_EMAILS ADMIN_EMAILS YANDEX_SEARCH_API_KEY YANDEX_SEARCH_API_KEY_ID YANDEX_SEARCH_FOLDER_ID
+ExecStart=/opt/aitalks/backup-venv/bin/python /opt/aitalks/app/scripts/backup_job.py
+TimeoutStartSec=15min
+Nice=10
+StandardOutput=journal
+StandardError=journal

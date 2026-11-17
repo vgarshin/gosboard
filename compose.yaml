@@ -1,0 +1,82 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    restart: unless-stopped
+    init: true
+    environment:
+      APP_ENV: ${APP_ENV:-production}
+      APP_ORIGIN: ${APP_ORIGIN:-https://aitalks.tech}
+      DEMO_MODE: ${DEMO_MODE:-false}
+      DATA_DIR: /data
+      CONFIG_PATH: /app/config/app.json
+      ALLOWED_EMAILS: ${ALLOWED_EMAILS:-}
+      ADMIN_EMAILS: ${ADMIN_EMAILS:-}
+      YANDEX_OAUTH_CLIENT_ID: ${YANDEX_OAUTH_CLIENT_ID:-}
+      YANDEX_OAUTH_CLIENT_SECRET: ${YANDEX_OAUTH_CLIENT_SECRET:-}
+      YANDEX_CLOUD_FOLDER_ID: ${YANDEX_CLOUD_FOLDER_ID:-}
+      YANDEX_AI_API_KEY: ${YANDEX_AI_API_KEY:-}
+      YANDEX_SPEECHKIT_API_KEY: ${YANDEX_SPEECHKIT_API_KEY:-}
+      PROVIDER_BUDGET_REVIEWED: ${PROVIDER_BUDGET_REVIEWED:-false}
+      DAILY_LIMIT_RUB: ${DAILY_LIMIT_RUB:-500}
+      MONTHLY_LIMIT_RUB: ${MONTHLY_LIMIT_RUB:-5000}
+      LLM_RESERVE_RUB: ${LLM_RESERVE_RUB:-10}
+      STT_RESERVE_RUB: ${STT_RESERVE_RUB:-5}
+      WEB_SEARCH_ENABLED: ${WEB_SEARCH_ENABLED:-false}
+      YANDEX_SEARCH_FOLDER_ID: ${YANDEX_SEARCH_FOLDER_ID:-}
+      YANDEX_SEARCH_API_KEY: ${YANDEX_SEARCH_API_KEY:-}
+      SEARCH_RESERVE_RUB: ${SEARCH_RESERVE_RUB:-10}
+      SEARCH_CACHE_TTL_SECONDS: ${SEARCH_CACHE_TTL_SECONDS:-600}
+      WEB_PAGE_FETCH_ENABLED: ${WEB_PAGE_FETCH_ENABLED:-true}
+      WEB_PAGE_CACHE_TTL_SECONDS: ${WEB_PAGE_CACHE_TTL_SECONDS:-600}
+      RAG_ENABLED: ${RAG_ENABLED:-false}
+      RAG_DOC_MODEL: ${RAG_DOC_MODEL:-text-search-doc/latest}
+      RAG_QUERY_MODEL: ${RAG_QUERY_MODEL:-text-search-query/latest}
+      RAG_MIN_SCORE: ${RAG_MIN_SCORE:-0.2}
+      EMBEDDING_RESERVE_RUB: ${EMBEDDING_RESERVE_RUB:-0.1}
+      BACKUP_S3_BUCKET: ${BACKUP_S3_BUCKET:-aitalks-data}
+      BACKUP_S3_ENDPOINT: ${BACKUP_S3_ENDPOINT:-https://storage.yandexcloud.net}
+      AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-ru-central1}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_EC2_METADATA_DISABLED: "true"
+      TTS_RESERVE_RUB: ${TTS_RESERVE_RUB:-20}
+    volumes:
+      - app_data:/data
+      - ./config:/app/config:ro
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 1g
+    cpus: 1.5
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request, urllib.parse; urllib.request.urlopen(urllib.request.Request('http://127.0.0.1:8000/api/health', headers={'Host': urllib.parse.urlparse(__import__('os').environ['APP_ORIGIN']).hostname}))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+  web:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    restart: unless-stopped
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:-aitalks.tech}
+      WWW_ADDRESS: ${WWW_ADDRESS:-http://localhost:8089}
+    ports:
+      - "${HTTP_BIND:-0.0.0.0}:80:80"
+      - "${HTTPS_BIND:-0.0.0.0}:443:443"
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      backend:
+        condition: service_healthy
+    mem_limit: 256m
+    cpus: 0.5
+volumes:
+  app_data:
+  caddy_data:
+  caddy_config:

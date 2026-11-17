@@ -1,0 +1,1 @@
+Test-only 8 kHz mono signed 16-bit speech fixture from https://github.com/wiseman/py-webrtcvad/blob/master/test-audio.raw. Upstream test_webrtcvad.py identifies its format. See webrtc-speech-LICENSE.txt. No user recordings or private chat audio.

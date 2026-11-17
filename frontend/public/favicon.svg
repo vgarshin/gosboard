@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <title>AI Talks</title>
+  <rect width="64" height="64" rx="16" fill="#244b3b"/>
+  <!-- AudioLines motif matches the app's existing Lucide (ISC) brand mark. -->
+  <g transform="translate(10 10) scale(1.8333333)" fill="none" stroke="#eef5e9" stroke-width="2" stroke-linecap="round">
+    <path d="M2 10v3M6 6v11M10 3v18M14 8v7M18 5v13M22 10v3"/>
+  </g>
+</svg>
