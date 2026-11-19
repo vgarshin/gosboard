@@ -39,7 +39,7 @@ def test_budget_atomic_concurrent_reservations_and_periods(tmp_path):
         try:store.reserve('u','llm',10,999,999);return True
         except HTTPException:return False
     with ThreadPoolExecutor(max_workers=4) as pool:assert sum(pool.map(reserve,range(4)))==1
-    with store.connection() as db:db.execute('INSERT INTO usage VALUES (?,?,?,?,?,?)',('old','u','llm',99,'complete',0))
+    with store.connection() as db:db.execute('INSERT INTO usage(id,user_id,kind,reserved,state,created) VALUES (?,?,?,?,?,?)',('old','u','llm',99,'complete',0))
     view=store.budget()
     assert view['day']['used_rub']==10
     assert view['month']['used_rub']==10
@@ -52,7 +52,7 @@ def test_monthly_limit_blocks_even_when_today_is_empty(tmp_path):
     now=datetime(2026,11,14,12,tzinfo=timezone.utc)
     import unittest.mock
     with store.connection() as db:
-        db.execute('INSERT INTO usage VALUES (?,?,?,?,?,?)',('earlier','u','llm',10,'complete',datetime(2026,11,13,tzinfo=timezone.utc).timestamp()))
+        db.execute('INSERT INTO usage(id,user_id,kind,reserved,state,created) VALUES (?,?,?,?,?,?)',('earlier','u','llm',10,'complete',datetime(2026,11,13,tzinfo=timezone.utc).timestamp()))
     with unittest.mock.patch('app.store.datetime') as clock:
         clock.now.return_value=now
         assert store.budget()['day']['used_rub']==0

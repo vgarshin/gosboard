@@ -71,12 +71,12 @@ class WebSearch:
         if options.web_search_enabled and not self.settings.web_enabled:
             raise HTTPException(409,'Поиск в интернете не настроен')
 
-    async def retrieve(self,question,uid,request_id,max_chars):
+    async def retrieve(self,question,uid,request_id,max_chars, *, space_id=None):
         if not self.settings.web_enabled:raise HTTPException(409,'Поиск в интернете не настроен')
         started=time.monotonic()
         if max_chars<40:raise HTTPException(422,'Недостаточно места для результатов поиска')
         query=' '.join(question.split())[:400]
-        key=cache_key('web-search-v1',uid,self.settings.search_folder,query)
+        key=cache_key('web-search-v2',space_id,uid,self.settings.search_folder,query)
         cached=self.store.get_cache(key,uid,'web-search')
         if cached:
             data=json.loads(cached)
@@ -104,7 +104,7 @@ class WebSearch:
             kind='page_excerpt' if loaded else 'search_snippet'
             url=page['url'] if loaded else item['url']
             title=(page.get('title') or item['title']) if loaded else item['title']
-            source_id=cache_key('web-source-v2',uid,query,data['fetched_at'],item,page.get('fetched_at'),page.get('content_hash'),kind,url,excerpt)
+            source_id=cache_key('web-source-v3',space_id,uid,query,data['fetched_at'],item,page.get('fetched_at'),page.get('content_hash'),kind,url,excerpt)
             sources.append({'id':'W'+str(len(sources)+1),'type':'web','source_id':source_id,
                 'title':title,'url':url,'preview_url':'/web-sources/'+source_id,
                 'excerpt':excerpt,'query':query,'fetched_at':data['fetched_at'],'content_kind':kind,

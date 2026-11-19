@@ -36,20 +36,43 @@ class Access:
                     target TEXT NOT NULL, details TEXT NOT NULL, created REAL NOT NULL);
             ''')
             db.execute('BEGIN IMMEDIATE')
+            if 'import_name' not in {row['name'] for row in db.execute('PRAGMA table_info(access_accounts)')}:
+                db.execute('ALTER TABLE access_accounts ADD COLUMN import_name TEXT')
             if settings.demo:
-                db.execute("INSERT OR IGNORE INTO access_accounts VALUES ('demo@localhost','admin',1,?,?)", (time.time(), time.time()))
+                db.execute("INSERT OR IGNORE INTO access_accounts(email,role,enabled,created,updated) VALUES ('demo@localhost','admin',1,?,?)", (time.time(), time.time()))
             if not db.execute("SELECT 1 FROM access_migrations WHERE name='env-access-v1'").fetchone():
                 for email in settings.allowed:
-                    db.execute('INSERT OR IGNORE INTO access_accounts VALUES (?,?,?,?,?)',
+                    db.execute('INSERT OR IGNORE INTO access_accounts(email,role,enabled,created,updated) VALUES (?,?,?,?,?)',
                                (email, 'admin' if email in settings.admins else 'user', 1, time.time(), time.time()))
                 db.execute("INSERT INTO access_migrations VALUES ('env-access-v1')")
+
+    def oauth_identity(self, uid, email, name):
+        try:
+            email = AccountInput(email=email).email
+        except ValueError:
+            raise HTTPException(502, 'Яндекс не предоставил основной email') from None
+        with self.store.connection() as db:
+            db.execute('BEGIN IMMEDIATE')
+            identity = db.execute('SELECT email FROM users WHERE id=?', (uid,)).fetchone()
+            other = db.execute('SELECT id FROM users WHERE lower(email)=? AND id!=?', (email, uid)).fetchone()
+            if (identity and identity['email'].lower() != email) or other:
+                return False
+            now = time.time()
+            new_account = db.execute("INSERT OR IGNORE INTO access_accounts(email,role,enabled,created,updated) VALUES (?,'user',-1,?,?)",
+                                     (email, now, now))
+            if new_account.rowcount:
+                self.audit(uid, 'account.request', email, {}, db)
+            if db.execute('SELECT enabled FROM access_accounts WHERE email=?', (email,)).fetchone()[0] == 0:
+                return False
+            db.execute("""
+                INSERT INTO users(id,email,name) VALUES (?,?,?)
+                ON CONFLICT(id) DO UPDATE SET name=excluded.name
+            """, (uid, email, name))
+        return True
 
     def account(self, email):
         with self.store.connection() as db:
             row = db.execute('SELECT * FROM access_accounts WHERE email=?', (email.lower(),)).fetchone()
-        # Explicitly local demo identities remain usable for offline restore checks.
-        if not row and self.settings.demo:
-            return {'email': email, 'role': 'admin', 'enabled': 1}
         return dict(row) if row else None
 
     def audit(self, actor, action, target, details, db=None):
@@ -62,7 +85,8 @@ class Access:
 
     def accounts(self):
         with self.store.connection() as db:
-            return [dict(row) for row in db.execute('''SELECT a.email,a.role,a.enabled,a.updated,
+            return [dict(row) for row in db.execute('''SELECT a.email,a.role,a.import_name AS name,(a.enabled=1) AS enabled,a.updated,
+                CASE a.enabled WHEN -1 THEN 'pending' WHEN 1 THEN 'active' ELSE 'disabled' END AS status,
                 (SELECT count(*) FROM users u WHERE lower(u.email)=a.email) AS signed_in
                 FROM access_accounts a ORDER BY a.email''')]
 
@@ -72,23 +96,28 @@ class Access:
             previous = db.execute('SELECT * FROM access_accounts WHERE email=?', (body.email,)).fetchone()
             if create_only and previous:
                 raise HTTPException(409, 'Этот пользователь уже добавлен. Используйте изменение роли или переключатель доступа')
-            if previous and previous['enabled'] and previous['role']=='admin' and (not body.enabled or body.role!='admin'):
+            if previous and previous['enabled']==1 and previous['role']=='admin' and (not body.enabled or body.role!='admin'):
                 others = db.execute("SELECT count(*) FROM access_accounts a WHERE enabled=1 AND role='admin' AND email!=? AND EXISTS (SELECT 1 FROM users u WHERE lower(u.email)=a.email)", (body.email,)).fetchone()[0]
                 if not others:
                     raise HTTPException(409, 'Нельзя отключить или понизить последнего администратора, который уже входил')
-            db.execute('''INSERT INTO access_accounts VALUES (?,?,?,?,?) ON CONFLICT(email)
+            db.execute('''INSERT INTO access_accounts(email,role,enabled,created,updated) VALUES (?,?,?,?,?) ON CONFLICT(email)
                 DO UPDATE SET role=excluded.role,enabled=excluded.enabled,updated=excluded.updated''',
                 (body.email, body.role, int(body.enabled), time.time(), time.time()))
             if previous and (previous['role']!=body.role or previous['enabled']!=int(body.enabled)):
-                db.execute('DELETE FROM sessions WHERE user_id IN (SELECT id FROM users WHERE lower(email)=?)', (body.email,))
+                if body.role != 'editor' or not body.enabled:
+                    db.execute('UPDATE space_editors SET active=0,revision=revision+1 WHERE email=? AND active=1', (body.email,))
+                if previous['enabled'] != -1 or not body.enabled:
+                    db.execute('DELETE FROM sessions WHERE user_id IN (SELECT id FROM users WHERE lower(email)=?)', (body.email,))
             self.audit(actor, 'account.save', body.email, body.model_dump(), db)
         return self.account(body.email)
 
-    def editor_chats(self):
+    def editor_chats(self, current):
         with self.store.connection() as db:
-            rows = db.execute('''SELECT c.id,c.title,c.user_id,u.email,c.updated,coalesce(s.settings,'{}') AS settings
+            rows = db.execute('''SELECT c.id,c.title,c.user_id,u.email,c.updated,c.space_id,coalesce(s.settings,'{}') AS settings
                 FROM chats c JOIN users u ON u.id=c.user_id LEFT JOIN chat_settings s ON s.chat_id=c.id
-                ORDER BY c.updated DESC LIMIT 500''').fetchall()
+                WHERE ?='admin' OR EXISTS (
+                    SELECT 1 FROM space_editors e WHERE e.space_id=c.space_id AND e.email=? AND e.active=1
+                ) ORDER BY c.updated DESC LIMIT 500''', (current['role'], current['email'])).fetchall()
         return [{**dict(row), 'settings': self.store.chat_options(row['settings'])} for row in rows]
 
     def admin_chats(self, owner=None, offset=0, limit=50):

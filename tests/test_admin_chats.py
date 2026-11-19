@@ -39,8 +39,8 @@ def test_admin_list_pagination_beyond_500_and_owner_filter(roles):
     now=time.time()
     with app.state.store.connection() as db:
         rows=[(str(uuid4()),'user',f'Chat {i}',now,now+i) for i in range(505)]
-        db.executemany('INSERT INTO chats VALUES (?,?,?,?,?)',rows)
-        db.execute('INSERT INTO chats VALUES (?,?,?,?,?)',(str(uuid4()),'editor','Editor chat',now,now))
+        db.executemany('INSERT INTO chats(id,user_id,title,created,updated) VALUES (?,?,?,?,?)',rows)
+        db.execute('INSERT INTO chats(id,user_id,title,created,updated) VALUES (?,?,?,?,?)',(str(uuid4()),'editor','Editor chat',now,now))
     login('admin')
     listing=c.get('/api/admin/chats?limit=100&offset=500').json()
     assert listing['total']==506 and len(listing['items'])==6

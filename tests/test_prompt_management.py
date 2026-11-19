@@ -2,44 +2,32 @@ from uuid import uuid4
 from test_roles import roles
 
 
-def test_prompt_crud_selection_and_next_response(roles):
+def test_space_prompt_crud_and_snapshots(roles):
     c,app,provider,access,login,s=roles
-    login('user');cid=c.post('/api/chats').json()['id']
-    for method,path,body in [('GET','/api/editor/prompts',None),('POST','/api/editor/prompts',{}),('PUT','/api/editor/prompts/default',{}),('DELETE','/api/editor/prompts/default',{})]:
-        assert c.request(method,path,json=body).status_code==403
-    login('editor');catalog=c.get('/api/editor/prompts').json();revision=catalog['revision']
-    created=c.post('/api/editor/prompts',json={'expected_revision':revision,'label':'Education','system_prompt':'Original historical instruction'})
-    assert created.status_code==200,created.text
-    pid=created.json()['prompt_id'];revision=created.json()['revision']
-    assert pid.startswith('prompt-')
-    assert c.put(f'/api/editor/chats/{cid}/model',json={'model_id':'alice-flash','prompt_id':pid}).status_code==200
-    assert c.get(f'/api/chats/{cid}/messages').status_code==404
+    login('admin')
+    route='/api/management/spaces/initial/policy'
+    policy=c.get(route).json()['policy']
+    item={'id':'education','label':'Education','system_prompt':'Original historical instruction'}
+    policy.update(prompts=[item],prompt_id=item['id'])
+    assert c.put(route,json={'revision':1,'policy':policy}).status_code==200
     login('user')
-    assert c.post(f'/api/chats/{cid}/messages',json={'text':'Question','request_id':str(uuid4())}).status_code==200
-    assert provider.completions==1
-    old=app.state.store.messages(cid)[-1]
-    config_hash=old['metadata']['config_hash']
-    with app.state.store.connection() as db:
-        assert 'Original historical instruction' in db.execute('SELECT snapshot FROM configurations WHERE hash=?',(config_hash,)).fetchone()['snapshot']
-    login('editor')
-    result=c.put('/api/editor/prompts/'+pid,json={'expected_revision':revision,'label':'Education updated','system_prompt':'Updated historical instruction'})
-    assert result.status_code==200
-    revision=result.json()['revision']
-    assert c.request('DELETE','/api/editor/prompts/'+pid,json={'expected_revision':revision}).status_code==409
-    assert next(p for p in c.get('/api/editor/prompts').json()['prompts'] if p['id']==pid)['used_by_chats']==1
+    assert c.get(route).status_code==403
+    old=c.post('/api/chats').json()['id']
+    login('admin')
+    item['system_prompt']='Updated historical instruction'
+    assert c.put(route,json={'revision':2,'policy':policy}).status_code==200
+    assert c.put(route,json={'revision':2,'policy':policy}).status_code==409
     login('user')
-    assert c.post(f'/api/chats/{cid}/messages',json={'text':'Question','request_id':str(uuid4())}).status_code==200
-    new=app.state.store.messages(cid)[-1]
-    assert new['metadata']['config_hash']!=config_hash
-    with app.state.store.connection() as db:
-        assert 'Updated historical instruction' in db.execute('SELECT snapshot FROM configurations WHERE hash=?',(new['metadata']['config_hash'],)).fetchone()['snapshot']
-    assert app.state.store.messages(cid)[1]==old
-    login('editor')
-    assert c.put(f'/api/editor/chats/{cid}/model',json={'model_id':'alice-flash','prompt_id':'default'}).status_code==200
-    deleted=c.request('DELETE','/api/editor/prompts/'+pid,json={'expected_revision':revision})
-    assert deleted.status_code==200
-    assert all(p['id']!=pid for p in deleted.json()['prompts'])
-    assert any(p['id']=='default' for p in deleted.json()['prompts'])
+    new=c.post('/api/chats').json()['id']
+    login('admin')
+    policy.update(prompts=[],prompt_id='default')
+    assert c.put(route,json={'revision':3,'policy':policy}).status_code==200
+    login('user')
+    for cid, expected in [(old,'Original historical instruction'),(new,'Updated historical instruction')]:
+        assert c.post(f'/api/chats/{cid}/messages',json={'text':'Question','request_id':str(uuid4())}).status_code==200
+        metadata=app.state.store.messages(cid)[-1]['metadata']
+        with app.state.store.connection() as db:
+            assert expected in db.execute('SELECT snapshot FROM configurations WHERE hash=?',(metadata['config_hash'],)).fetchone()['snapshot']
 
 
 def test_prompt_validation_stale_versions_and_protected_default(roles):
@@ -50,7 +38,7 @@ def test_prompt_validation_stale_versions_and_protected_default(roles):
     assert c.post('/api/editor/prompts',json={'expected_revision':revision,'label':' ','system_prompt':' '}).status_code==422
     changed=c.put('/api/editor/prompts/default',json={'expected_revision':revision,'label':original['label'],'system_prompt':'Live default instructions'})
     assert changed.status_code==200
-    assert c.get('/api/config').json()['version']==f'live-{revision+1}'
+    assert c.get('/api/admin/config').json()['config']['version']==f'live-{revision+1}'
     assert c.post('/api/editor/prompts',json={'expected_revision':revision,'label':'Stale','system_prompt':'Must not overwrite'}).status_code==409
     latest=changed.json()['revision']
     assert c.put('/api/editor/prompts/default',json={'expected_revision':latest,'label':'Rename default','system_prompt':'Some text'}).status_code==422

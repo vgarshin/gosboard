@@ -43,6 +43,8 @@ class KnowledgeStore:
             for column, default in [('chunk_size',1200),('chunk_overlap',180),('top_k',5),('top_k_documents',5)]:
                 if column not in columns:
                     db.execute(f'ALTER TABLE rag_bases ADD COLUMN {column} INTEGER NOT NULL DEFAULT {default}')
+            if 'job_actor' not in {row['name'] for row in db.execute('PRAGMA table_info(rag_documents)')}:
+                db.execute('ALTER TABLE rag_documents ADD COLUMN job_actor TEXT')
             db.execute("UPDATE rag_documents SET status='queued_upload' WHERE deleted=0 AND status='uploading'")
             db.execute("UPDATE rag_documents SET status='queued' WHERE deleted=0 AND status='processing'")
             db.execute('UPDATE rag_documents SET delete_attempts=0 WHERE deleted=1 AND object_deleted=0')
@@ -69,13 +71,15 @@ class KnowledgeStore:
             result.append(item)
         return result
 
-    def create_base(self, name):
+    def create_base(self, name, on_create=None):
         bid = str(uuid4())
         with self.connection() as db:
             db.execute('BEGIN IMMEDIATE')
             if db.execute('SELECT count(*) FROM rag_bases WHERE deleted=0').fetchone()[0] >= 20:
                 raise HTTPException(422, 'Достигнут лимит: 20 баз знаний')
             db.execute('INSERT INTO rag_bases(id,name,created) VALUES (?,?,?)', (bid, name, time.time()))
+            if on_create:
+                on_create(db, bid)
         return self.base(bid)
 
     def documents(self, bid):
@@ -100,7 +104,7 @@ class KnowledgeStore:
             row = db.execute('SELECT * FROM rag_documents WHERE base_id=? AND sha=? AND deleted=0', (bid, sha)).fetchone()
         return dict(row) if row else None
 
-    def add_document(self, did, bid, filename, sha, key, mime, uid, max_documents):
+    def add_document(self, did, bid, filename, sha, key, mime, uid, max_documents, actor=None):
         with self.connection() as db:
             db.execute('BEGIN IMMEDIATE')
             if not db.execute('SELECT 1 FROM rag_bases WHERE id=? AND deleted=0', (bid,)).fetchone():
@@ -110,12 +114,12 @@ class KnowledgeStore:
                 return dict(existing)
             if db.execute('SELECT count(*) FROM rag_documents WHERE deleted=0').fetchone()[0] >= max_documents:
                 raise HTTPException(422, 'Достигнут лимит документов')
-            db.execute('''INSERT INTO rag_documents(id,base_id,filename,sha,object_key,mime,status,requested_by,created)
-                          VALUES (?,?,?,?,?,?,'queued_upload',?,?)''', (did, bid, filename, sha, key, mime, uid, time.time()))
+            db.execute('''INSERT INTO rag_documents(id,base_id,filename,sha,object_key,mime,status,requested_by,created,job_actor)
+                          VALUES (?,?,?,?,?,?,'queued_upload',?,?,?)''', (did, bid, filename, sha, key, mime, uid, time.time(), actor))
         return self.document(did)
 
     def set_document(self, did, **fields):
-        allowed = {'status', 'progress', 'total', 'error', 'object_deleted', 'delete_attempts'}
+        allowed = {'status', 'progress', 'total', 'error', 'object_deleted', 'delete_attempts', 'job_actor'}
         if not fields or not set(fields) <= allowed:
             raise ValueError('Invalid document update')
         with self.connection() as db:
@@ -204,11 +208,11 @@ class KnowledgeStore:
             db.execute("DELETE FROM cache WHERE kind IN ('llm','rag_query')")
         return document
 
-    def queue_reindex(self, bid):
+    def queue_reindex(self, bid, actor=None):
         self.base(bid)
         with self.connection() as db:
             db.execute('BEGIN IMMEDIATE')
             db.execute('DELETE FROM rag_embeddings WHERE key IN (SELECT embedding_key FROM rag_chunks WHERE base_id=?)', (bid,))
-            db.execute("UPDATE rag_documents SET status='queued',progress=0,error='' WHERE base_id=? AND deleted=0 AND status!='queued_upload'", (bid,))
+            db.execute("UPDATE rag_documents SET status='queued',progress=0,error='',job_actor=? WHERE base_id=? AND deleted=0 AND status!='queued_upload'", (actor,bid))
             db.execute('UPDATE rag_bases SET rebuilding=1,revision=revision+1 WHERE id=?', (bid,))
             db.execute("DELETE FROM cache WHERE kind IN ('llm','rag_query')")

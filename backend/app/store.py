@@ -4,11 +4,15 @@ import secrets
 import sqlite3
 import time
 from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
 from fastapi import HTTPException
+
+
+operation_space = ContextVar("operation_space", default=None)
 
 
 def digest(value):
@@ -54,11 +58,20 @@ class Store:
             ''')
             db.execute('BEGIN IMMEDIATE')
             columns = {row['name'] for row in db.execute('PRAGMA table_info(chats)')}
+            if 'space_id' not in columns:
+                db.execute("ALTER TABLE chats ADD COLUMN space_id TEXT NOT NULL DEFAULT 'initial'")
+            db.execute('CREATE INDEX IF NOT EXISTS chats_owner_space ON chats(user_id,space_id,updated)')
             db.execute('CREATE TABLE IF NOT EXISTS chat_settings (chat_id TEXT PRIMARY KEY, settings TEXT NOT NULL)')
             if 'settings' in columns:
                 # Import settings from the unreleased local prototype if present.
                 db.execute('INSERT OR IGNORE INTO chat_settings SELECT id,settings FROM chats')
             db.execute('DELETE FROM chat_settings WHERE chat_id NOT IN (SELECT id FROM chats)')
+            db.execute('CREATE TABLE IF NOT EXISTS chat_profiles (chat_id TEXT PRIMARY KEY, profiles TEXT NOT NULL)')
+            if 'space_id' not in {row['name'] for row in db.execute('PRAGMA table_info(usage)')}:
+                db.execute('ALTER TABLE usage ADD COLUMN space_id TEXT')
+            if 'space_id' not in {row['name'] for row in db.execute('PRAGMA table_info(cache)')}:
+                db.execute('ALTER TABLE cache ADD COLUMN space_id TEXT')
+                db.execute("DELETE FROM cache WHERE kind='tts'")
             db.execute('CREATE TABLE IF NOT EXISTS configurations (hash TEXT PRIMARY KEY, snapshot TEXT NOT NULL, created REAL NOT NULL)')
             # Unknown in-flight outcomes may have been billed: retain their reservation.
             db.execute("UPDATE requests SET status='interrupted' WHERE status='pending'")
@@ -119,9 +132,9 @@ class Store:
         from .configuration import ChatOptions
         return ChatOptions.model_validate_json(raw).model_dump()
 
-    def chats(self, uid):
+    def chats(self, uid, sid="initial"):
         with self.connection() as db:
-            rows = db.execute("SELECT c.*, coalesce(s.settings,'{}') AS selected_settings FROM chats c LEFT JOIN chat_settings s ON s.chat_id=c.id WHERE c.user_id=? ORDER BY c.updated DESC LIMIT 200", (uid,)).fetchall()
+            rows = db.execute("SELECT c.*, coalesce(s.settings,'{}') AS selected_settings FROM chats c LEFT JOIN chat_settings s ON s.chat_id=c.id WHERE c.user_id=? AND c.space_id=? ORDER BY c.updated DESC LIMIT 200", (uid, sid)).fetchall()
         result = []
         for row in rows:
             item = dict(row)
@@ -129,12 +142,17 @@ class Store:
             result.append(item)
         return result
 
-    def new_chat(self, uid, options=None):
+    def new_chat(self, uid, options=None, *, sid="initial", authorize=None, profiles=None):
         cid, now = str(uuid4()), time.time()
         with self.connection() as db:
-            db.execute('INSERT INTO chats(id,user_id,title,created,updated) VALUES (?,?,?,?,?)',
-                       (cid, uid, 'Новый разговор', now, now))
+            db.execute('BEGIN IMMEDIATE')
+            if authorize:
+                authorize(db)
+            db.execute('INSERT INTO chats(id,user_id,title,created,updated,space_id) VALUES (?,?,?,?,?,?)',
+                       (cid, uid, 'Новый разговор', now, now, sid))
             db.execute('INSERT INTO chat_settings VALUES (?,?)', (cid, json.dumps(options or {})))
+            if profiles is not None:
+                db.execute('INSERT INTO chat_profiles VALUES (?,?)', (cid, json.dumps(profiles)))
         return self.chat(cid, uid)
 
     def update_chat_settings(self, cid, uid, options):
@@ -180,6 +198,7 @@ class Store:
         self.chat(cid, uid)
         with self.connection() as db:
             db.execute('DELETE FROM chat_settings WHERE chat_id=?', (cid,))
+            db.execute('DELETE FROM chat_profiles WHERE chat_id=?', (cid,))
             db.execute('DELETE FROM messages WHERE chat_id=?', (cid,))
             db.execute('DELETE FROM chats WHERE id=?', (cid,))
             # Purge user's derived content, including cached responses and audio.
@@ -236,7 +255,7 @@ class Store:
             db.execute('INSERT INTO audit_events(actor,action,target,details,created) VALUES (?,?,?,?,?)', (actor,'budget.update','global',json.dumps({'before':previous,'after':{'daily':daily,'monthly':monthly,'revision':revision+1}}),time.time()))
         return self.budget()
 
-    def reserve(self, uid, kind, amount, daily, monthly):
+    def reserve(self, uid, kind, amount, daily, monthly, space_id=None):
         now = datetime.now(timezone.utc)
         day = now.replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
         month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0).timestamp()
@@ -250,7 +269,7 @@ class Store:
             monthly_used = db.execute('SELECT coalesce(sum(reserved),0) FROM usage WHERE created>=?', (month,)).fetchone()[0]
             if daily_used + amount > daily or monthly_used + amount > monthly:
                 raise HTTPException(429, 'Достигнут лимит расходов. Обратитесь к администратору')
-            db.execute('INSERT INTO usage VALUES (?,?,?,?,?,?)', (rid, uid, kind, amount, 'pending', time.time()))
+            db.execute('INSERT INTO usage(id,user_id,kind,reserved,state,created,space_id) VALUES (?,?,?,?,?,?,?)', (rid, uid, kind, amount, 'pending', time.time(), space_id))
         return rid
 
     def settle(self, rid, state):
@@ -274,9 +293,10 @@ class Store:
         return bytes(row['value']) if row else None
 
     def put_cache(self, key, uid, kind, value, ttl):
+        space_id = operation_space.get()
         with self.connection() as db:
-            db.execute('INSERT OR REPLACE INTO cache VALUES (?,?,?,?,?,?)',
-                       (key, uid, kind, value, time.time() + ttl, time.time()))
+            db.execute('INSERT OR REPLACE INTO cache(key,user_id,kind,value,expires,created,space_id) VALUES (?,?,?,?,?,?,?)',
+                       (key, uid, kind, value, time.time() + ttl, time.time(), space_id))
 
     def cleanup(self, max_bytes):
         with self.connection() as db:

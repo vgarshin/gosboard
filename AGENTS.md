@@ -17,8 +17,8 @@
 
 ## Access, secrets and data
 
-- Administrators can read all users' messages only through the dedicated audited viewer. Editors see foreign chat titles/settings without message bodies. Normal mutation, export and audio routes stay owner-scoped; admin read access does not imply send-as-owner or foreign audio/export rights.
-- Knowledge bases are shared among allowed users; do not introduce private bases by default.
+- Administrators can read all users' messages only through the dedicated audited viewer. Editors see foreign chat titles/settings only in explicitly managed spaces. Normal mutation, export and audio routes stay owner-scoped; admin read access does not imply send-as-owner or foreign audio/export rights.
+- Knowledge bases can serve several spaces. Chat retrieval uses the saved space policy and current membership. Document management requires the base creator, an explicit RAG manager or an administrator.
 - Use one ignored `.env` for application and backup credentials; production uses `/etc/aitalks/production.env`. Never print values, store them in examples or expose them to frontend code. Validate Compose with `config --quiet`, never a rendered credentialed config.
 - Do not commit runtime databases, caches, recordings, backups, original knowledge documents, private chats, books, correspondence or local credential stores. Test fixtures must be synthetic or publicly licensed/attributed. Keep dependency locks and upstream license notices.
 - Do not initialize Store/KnowledgeStore/create_app against a live database merely to inspect it: initialization can change pending-work state. Prefer authenticated APIs or deliberate read-only queries for authorized diagnostics.

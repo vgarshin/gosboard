@@ -15,6 +15,7 @@ from app.providers import Providers
 from app.rag import RAG_CONTRACT, UNSUPPORTED, validate_rag_answer
 from app.settings import Settings
 from test_app import CONFIG
+from space_helpers import configure_space, stored_answer
 
 ORIGIN = 'http://localhost'
 TEXT = ('Education reform established the navigation school in 1701. Mathematics and navigation were taught to prepare specialists. ' * 8).encode()
@@ -118,7 +119,8 @@ def ready_base(client):
 
 
 def rag_chat(client, bid):
-    response = client.post('/api/chats', json={'rag_enabled': True, 'knowledge_base_id': bid})
+    configure_space(client, base_ids=[bid])
+    response = client.post('/api/chats')
     assert response.status_code == 200, response.text
     return response.json()['id']
 
@@ -136,8 +138,10 @@ def test_upload_index_citations_source_and_tts(rag_setup):
     cid = rag_chat(client, bid)
     result = ask(client, cid)
     assert result.status_code == 200, result.text
-    messages = client.get(f'/api/chats/{cid}/messages').json()
-    answer = messages[-1]
+    answer = stored_answer(client, cid)
+    visible = client.get(f'/api/chats/{cid}/messages').json()[-1]['metadata']['citations'][0]
+    assert visible['type'] == 'rag' and visible['available']
+    assert 'excerpt' not in visible and 'document_url' not in visible
     source = answer['metadata']['citations'][0]
     assert '[D1]' in answer['text'] and source['document_id'] == did
     assert source['url'].startswith('/sources/')
@@ -158,7 +162,7 @@ def test_off_mode_never_calls_embeddings_and_query_cache_scoped(rag_setup):
     client, app, provider, objects = rag_setup
     bid, _, _ = ready_base(client)
     baseline = provider.embeddings
-    off = client.post('/api/chats', json={'knowledge_base_id': bid, 'rag_enabled': False}).json()['id']
+    off = client.post('/api/chats').json()['id']
     assert ask(client, off).status_code == 200
     assert provider.embeddings == baseline
     cid = rag_chat(client, bid)
@@ -184,7 +188,8 @@ def test_shared_base_private_chats_and_deleted_sources(rag_setup):
     first = rag_chat(client, bid)
     assert ask(client, first).status_code == 200
     source = app.state.store.messages(first)[-1]['metadata']['citations'][0]
-    app.state.store.user('second', 'second@localhost', 'Second')
+    assert client.post('/api/admin/users', json={'email':'second@example.org','role':'admin'}).status_code == 200
+    app.state.store.user('second', 'second@example.org', 'Second')
     token = app.state.store.session('second', 3600)
     client.cookies.clear(); client.cookies.set('gosboard_session', token)
     client.headers['X-CSRF-Token'] = app.state.store.auth(token)['csrf']
@@ -196,7 +201,7 @@ def test_shared_base_private_chats_and_deleted_sources(rag_setup):
     assert client.get('/api/sources/' + source['chunk_id']).status_code == 410
     assert client.get(source['document_url']).status_code == 410
     assert app.state.store.messages(first)[-1]['metadata']['citations'][0]['excerpt']
-    assert client.post('/api/chats', json={'rag_enabled': True, 'knowledge_base_id': bid}).status_code == 409
+    assert ask(client, first).status_code == 404
     deadline = time.monotonic() + 3
     while objects.values and time.monotonic() < deadline:
         time.sleep(.02)
@@ -228,14 +233,16 @@ def test_unsupported_question_does_not_expose_unattributed_model_text(rag_setup)
 def test_missing_base_and_index_model_drift_fail_safely(rag_setup):
     client, app, provider, _ = rag_setup
     empty = new_base(client)
-    assert client.post('/api/chats', json={'rag_enabled': True, 'knowledge_base_id': empty}).status_code == 409
+    assert ask(client, rag_chat(client, empty)).status_code == 409
     bid, _, _ = ready_base(client)
     provider.query_version = 'changed-query-model'
     cid = rag_chat(client, bid)
     assert ask(client, cid).status_code == 409
     assert provider.completions == 0
     assert client.delete(f'/api/knowledge-bases/{bid}').status_code == 200
-    assert client.put(f'/api/chats/{cid}/settings', json={'rag_enabled': False, 'knowledge_base_id': bid}).status_code == 200
+    assert ask(client, cid).status_code == 404
+    configure_space(client, base_ids=[])
+    assert ask(client, client.post('/api/chats').json()['id']).status_code == 200
 
 
 def test_failed_upload_requires_explicit_retry(rag_setup):
@@ -335,7 +342,7 @@ def test_scanned_pdf_is_flagged_without_embedding_spend(rag_setup):
     assert provider.embeddings == 0
 
 
-def test_nonadmin_can_read_global_sources_but_cannot_mutate(tmp_path):
+def test_nonadmin_cannot_read_catalog_or_mutate(tmp_path):
     from test_app import live_settings
     settings = live_settings(tmp_path)
     settings.rag_enabled = True; settings.s3_key = 'fake'; settings.s3_secret = 'fake'
@@ -346,7 +353,7 @@ def test_nonadmin_can_read_global_sources_but_cannot_mutate(tmp_path):
         client.headers['Origin'] = settings.origin
         token = store.session('reader', 3600); client.cookies.set('gosboard_session', token)
         client.headers['X-CSRF-Token'] = store.auth(token)['csrf']
-        assert client.get('/api/knowledge-bases').status_code == 200
+        assert client.get('/api/knowledge-bases').status_code == 403
         assert client.post('/api/knowledge-bases', json={'name':'Forbidden'}).status_code == 403
         assert client.delete('/api/knowledge-bases/' + str(uuid4())).status_code == 403
         assert client.post('/api/documents/' + str(uuid4()) + '/retry').status_code == 403
@@ -430,7 +437,7 @@ def test_word_ingestion_citations_and_original(rag_setup, kind):
     assert document['total'] >= 1
     cid = rag_chat(client, bid)
     assert ask(client, cid).status_code == 200
-    citation = client.get(f'/api/chats/{cid}/messages').json()[-1]['metadata']['citations'][0]
+    citation = stored_answer(client,cid)['metadata']['citations'][0]
     source = client.get('/api/sources/' + citation['chunk_id']).json()
     assert source['page'] is None
     assert 'navigation' in source['text'].lower()

@@ -1,5 +1,6 @@
 import asyncio
 import json
+from uuid import uuid4
 import httpx
 import pytest
 from app.configuration import AppConfig, ChatOptions,ModelOption,allowed_reasoning
@@ -40,18 +41,23 @@ def test_exact_reasoning_wire_parameter(tmp_path,mode,wire):
     asyncio.run(scenario())
 
 
-def test_live_catalog_protects_in_use_reasoning_and_user_permissions(roles):
+def test_reasoning_profile_survives_catalog_updates_and_user_cannot_override(roles):
+    from space_helpers import configure_space
     c,app,p,access,login,s=roles
-    login('admin');live=c.get('/api/editor/config').json();config=live['config']
-    entry=next(m for m in config['models'] if m['id']=='alice-flash')
+    login('admin')
+    live=c.get('/api/editor/config').json()
+    entry=next(model for model in live['config']['models'] if model['id']=='alice-flash')
     entry.update(reasoning_efforts=['low','high'],reasoning_supported=True)
-    assert c.put('/api/editor/config',json={'expected_revision':live['revision'],'config':config}).status_code==200
-    login('user');cid=c.post('/api/chats').json()['id']
-    assert c.put(f'/api/chats/{cid}/settings',json={'reasoning_effort':'high'}).status_code==403
-    login('editor')
-    response=c.put(f'/api/editor/chats/{cid}/model',json={'model_id':'alice-flash','reasoning_effort':'low'})
-    assert response.status_code==200,response.text
-    assert c.put(f'/api/editor/chats/{cid}/model',json={'model_id':'alice-flash','reasoning_effort':'medium'}).status_code==422
-    live=c.get('/api/editor/config').json();config=live['config'];next(m for m in config['models'] if m['id']=='alice-flash')['reasoning_efforts']=['high']
-    assert c.put('/api/editor/config',json={'expected_revision':live['revision'],'config':config}).status_code==409
+    assert c.put('/api/editor/config',json={'expected_revision':live['revision'],'config':live['config']}).status_code==200
+    configure_space(c, model_id='alice-flash', reasoning_effort='low')
+    login('user')
+    cid=c.post('/api/chats').json()['id']
+    assert c.patch(f'/api/chats/{cid}/mode',json={'reasoning_effort':'high'}).status_code==422
+    login('admin')
+    live=c.get('/api/editor/config').json()
+    entry=next(model for model in live['config']['models'] if model['id']=='alice-flash')
+    entry['reasoning_efforts']=['high']
+    assert c.put('/api/editor/config',json={'expected_revision':live['revision'],'config':live['config']}).status_code==200
+    login('user')
+    assert c.post(f'/api/chats/{cid}/messages',json={'text':'Question','request_id':str(uuid4())}).status_code==200
     assert app.state.store.chat(cid,'user')['settings']['reasoning_effort']=='low'

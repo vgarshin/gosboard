@@ -1,64 +1,83 @@
+import {formatDateTime} from './dateTime';
+import {Toggle} from './Toggle';
 import React, {useEffect, useState} from 'react';
 import {Plus, Trash2, X} from 'lucide-react';
 import {useDialog} from './useDialog';
-import {PromptManager} from './PromptManager';
+import {PanelTabs} from './PanelTabs';
 import {OperationsPanel} from './OperationsPanel';
 import {BudgetPanel} from './BudgetPanel';
 import {ReasoningModes, REASONING_LABELS, reasoningModes, canonicalReasoning} from './ReasoningModes';
 import {RagSettings} from './RagSettings';
 
-export function ConfigurationPanel({api,config,admin,currentChatId,onClose,onSaved}) {
+export function ConfigurationPanel({api,admin,onClose,onSaved}) {
  const dialog=useDialog(onClose);
- const [tab,setTab]=useState('chat'),[chats,setChats]=useState([]),[selected,setSelected]=useState(currentChatId||'');
- const [policy,setPolicy]=useState(null),[revision,setRevision]=useState(null),[draft,setDraft]=useState(null),[history,setHistory]=useState([]);
- const [promptTarget,setPromptTarget]=useState(undefined),[globalDirty,setGlobalDirty]=useState(false);
+ const [models,setModels]=useState([]);
+ const [tab,setTab]=useState('defaults');
+ const voices = [{id:'marina',label:'Марина'},{id:'filipp',label:'Филипп'}];
+ const [revision,setRevision]=useState(null),[draft,setDraft]=useState(null),[activeVersion,setActiveVersion]=useState(null),[history,setHistory]=useState([]);
+ const [audit,setAudit]=useState(null);
  const [busy,setBusy]=useState(false),[error,setError]=useState(''),[notice,setNotice]=useState(''),[limits,setLimits]=useState(null);
- async function load(){const [list,live,versions]=await Promise.all([api('/editor/chats'),api('/editor/config'),api('/editor/config/versions')]);setChats(list);setDraft(live.config);setRevision(live.revision);setGlobalDirty(false);setHistory(versions);const chat=list.find(c=>c.id===selected);if(chat)setPolicy(chat.settings);if(admin)setLimits(await api('/admin/config'));}
+ async function load(){const [live,versions]=await Promise.all([api('/editor/config'),api('/editor/config/versions')]);setDraft(live.config);setRevision(live.revision);setActiveVersion(live.config.version);setHistory(versions);if(admin) {
+  const [configuration, availability] = await Promise.all([api('/admin/config'), api('/admin/models')]);
+  setLimits(configuration);setModels(availability);
+ }}
  useEffect(()=>{load().catch(e=>setError(e.message));},[]);
- function choose(id){setSelected(id);setPolicy(chats.find(c=>c.id===id)?.settings||null);setNotice('');}
- function field(key,value){setGlobalDirty(true);setDraft(prev=>({...prev,[key]:value}));}
- function entry(kind,index,key,value){setGlobalDirty(true);setDraft(prev=>({...prev,[kind]:prev[kind].map((row,i)=>i===index?{...row,[key]:value}:row)}));}
- function remove(kind,index){setGlobalDirty(true);setDraft(prev=>({...prev,[kind]:prev[kind].filter((_,i)=>i!==index)}));}
+ function field(key,value){setDraft(prev=>({...prev,[key]:value}));}
+ function entry(kind,index,key,value){setDraft(prev=>({...prev,[kind]:prev[kind].map((row,i)=>i===index?{...row,[key]:value}:row)}));}
+ function remove(kind,index){setDraft(prev=>({...prev,[kind]:prev[kind].filter((_,i)=>i!==index)}));}
  async function action(work){setBusy(true);setError('');setNotice('');try{await work();await onSaved();setNotice('Сохранено');}catch(e){setError(e.message);}finally{setBusy(false);}}
- function saveChat(e){e.preventDefault();action(async()=>{const result=await api(`/editor/chats/${selected}/model`,{method:'PUT',body:JSON.stringify(policy)});setPolicy(result.settings);setChats(await api('/editor/chats'));});}
- function saveGlobal(e){e.preventDefault();action(async()=>{const result=await api('/editor/config',{method:'PUT',body:JSON.stringify({expected_revision:revision,config:draft})});setDraft(result.config);setRevision(result.revision);setGlobalDirty(false);setHistory(await api('/editor/config/versions'));});}
- async function promptsChanged(){await onSaved();const live=await api('/editor/config');if(!globalDirty){setDraft(live.config);setRevision(live.revision);}setHistory(await api('/editor/config/versions'));}
- function openPrompt(id){setPromptTarget(id);setTab('prompts');setNotice('');}
- const model=config.models.find(m=>m.id===policy?.model_id);
- return <div className="modal-backdrop"><section ref={dialog} className="modal configuration-modal" role="dialog" aria-modal="true" aria-label="Конфигурация">
-  <button type="button" className="icon-button modal-close" aria-label="Закрыть конфигурацию" onClick={onClose}><X size={18}/></button><span className="eyebrow">{admin?'АДМИНИСТРАТОР':'РЕДАКТОР'}</span><h2>Конфигурация</h2>
-  <div className="management-tabs"><button type="button" aria-pressed={tab==='chat'} onClick={()=>{setTab('chat');setNotice('');}}>Разговор</button><button type="button" aria-pressed={tab==='prompts'} onClick={()=>openPrompt(undefined)}>Промпты</button><button type="button" aria-pressed={tab==='defaults'} onClick={()=>{setTab('defaults');setNotice('');}}>Общие настройки</button>{admin&&<button type="button" aria-pressed={tab==='rag'} onClick={()=>setTab('rag')}>Настройки RAG</button>}{admin&&<button type="button" aria-pressed={tab==='operations'} onClick={()=>setTab('operations')}>Мониторинг</button>}{admin&&<button type="button" aria-pressed={tab==='budget'} onClick={()=>setTab('budget')}>Бюджет</button>}<button type="button" aria-pressed={tab==='history'} onClick={()=>setTab('history')}>История изменений</button></div>
+ function saveGlobal(e){e.preventDefault();action(async()=>{const result=await api('/editor/config',{method:'PUT',body:JSON.stringify({expected_revision:revision,config:draft})});setDraft(result.config);setRevision(result.revision);setActiveVersion(result.config.version);setHistory(await api('/editor/config/versions'));});}
+ function changeTab(next) {
+  setTab(next); setNotice('');
+  if(next==='audit') api('/admin/audit').then(setAudit).catch(e=>setError(e.message));
+ }
+ return <div className="modal-backdrop"><section ref={dialog} className="modal configuration-modal" role="dialog" aria-modal="true" aria-label="Настройки">
+  <button type="button" className="icon-button modal-close" aria-label="Закрыть настройки" onClick={onClose}><X size={18}/></button><span className="eyebrow">{admin?'АДМИНИСТРАТОР':'РЕДАКТОР'}</span><h2>Настройки</h2>
+  <PanelTabs label="Настройки" tabs={[['defaults','Общие настройки'],['rag','Настройки RAG'],['budget','Бюджет'],['operations','Мониторинг'],['history','История изменений'],['audit','Журнал']]} active={tab} onChange={changeTab}>
   {error&&<div className="error" role="alert">{error}</div>}{notice&&<p role="status">{notice}</p>}
-  {tab==='chat'&&<><p>{admin?'Выбор действует на один разговор. Переписка пользователей доступна в разделе «Пользователи → Разговоры».':'Выбор действует на один разговор. Для чужих разговоров доступны только название и настройки; сообщения закрыты.'}</p><form className="management-form" onSubmit={saveChat}>
-   <label>Разговор<select aria-label="Настраиваемый разговор" value={selected} onChange={e=>choose(e.target.value)} disabled={busy}><option value="">Выберите разговор</option>{chats.map(c=><option key={c.id} value={c.id}>{c.email} · {c.title}</option>)}</select></label>
-   {policy&&<><label>Модель<select aria-label="Модель разговора" value={policy.model_id} disabled={busy} onChange={e=>setPolicy({...policy,model_id:e.target.value,reasoning_effort:'default'})}>{config.models.map(m=><option key={m.id} value={m.id}>{m.label}</option>)}</select></label>
-    <label>Промпт<select aria-label="Инструкция разговора" value={policy.prompt_id} disabled={busy} onChange={e=>setPolicy({...policy,prompt_id:e.target.value})}>{config.prompts.map(p=><option key={p.id} value={p.id}>{p.label}</option>)}</select></label>
-    <div className="prompt-toolbar"><button type="button" disabled={busy} onClick={()=>openPrompt(policy.prompt_id)}>Редактировать промпт</button><button type="button" disabled={busy} onClick={()=>openPrompt('new')}><Plus size={14}/>Создать промпт</button></div>
-    <label>Голос<select aria-label="Голос разговора" value={policy.voice||''} disabled={busy} onChange={e=>setPolicy({...policy,voice:e.target.value||null})}><option value="">По умолчанию</option>{config.voices.map(v=><option key={v.id} value={v.id}>{v.label}</option>)}</select></label>
-    <label>Рассуждения<select aria-label="Рассуждения разговора" value={canonicalReasoning(policy.reasoning_effort)} disabled={busy||!model?.reasoning_efforts?.length} onChange={e=>setPolicy({...policy,reasoning_effort:e.target.value})}><option value="default">{model?.reasoning_efforts?.length?'По умолчанию':'Режимы не подтверждены'}</option>{(model?.reasoning_efforts||[]).map(mode=><option key={mode} value={mode}>{REASONING_LABELS[mode]||mode}</option>)}</select></label>
-    {admin&&<label>Предыдущих сообщений в контексте<input type="number" aria-label="Предыдущих сообщений в контексте" min={0} max={100} step={2} required disabled={busy} value={policy.history_messages??20} onChange={e=>setPolicy({...policy,history_messages:Number(e.target.value)})}/><small>По умолчанию 20 сообщений = 10 пар вопрос/ответ. Чётное число 0–100; 0 отключает передачу истории. История остаётся сохранённой. В контекст попадёт меньше сообщений, если исчерпан лимит символов, включая инструкцию и источники.</small></label>}
-    <small>Модель и инструкция применяются к следующим ответам. Голос — к следующему озвучиванию.</small><button className="primary" disabled={busy}>Сохранить настройки разговора</button></>}
-  </form></>}
-  {tab==='prompts'&&<PromptManager key={promptTarget||'catalog'} api={api} initialId={promptTarget} onChanged={promptsChanged} canPick={!!policy&&!!selected} onPick={id=>{setPolicy({...policy,prompt_id:id});setTab('chat');setNotice('Промпт выбран. Сохраните настройки разговора, чтобы применить.');}}/>}
-  {tab==='defaults'&&draft&&<><p>Общие настройки применяются к следующим ответам всех разговоров, использующих соответствующие значения по умолчанию или элементы каталога. Старые ответы сохраняют свои версии.</p><div className="configuration-version">Версия {revision} · {draft.version}<button type="button" disabled={busy} onClick={()=>{setError('');load().catch(e=>setError(e.message));}}>Загрузить актуальную версию</button></div>
+  {tab==='defaults' && <div className="management-form">
+   <h3>Доступные модели</h3>
+   <p>Блокировка действует на существующие и новые разговоры.</p>
+   {models.map(item => <label key={item.id} className="account-enabled">
+    <Toggle checked={!item.blocked} disabled={busy} onChange={e => {
+     const blocked = !e.target.checked;
+     action(async () => {
+      await api(`/admin/models/${encodeURIComponent(item.id)}`, {method:'PUT', body:JSON.stringify({blocked})});
+      setModels(await api('/admin/models'));
+     });
+    }}/>{item.label} · {item.id}
+   </label>)}
+  </div>}
+  {tab==='defaults'&&draft&&<><p>Общие настройки задают значения по умолчанию для новых разговоров.</p>
    <form className="management-form" onSubmit={saveGlobal}>
+    <div className="configuration-grid"><label>Температура<input type="number" aria-label="Температура" min={0} max={1} step={0.05} value={draft.temperature} disabled={busy} onChange={e=>field('temperature',Number(e.target.value))}/></label><label>Максимум токенов<input type="number" aria-label="Максимум токенов" min={1} max={2000} value={draft.max_tokens} disabled={busy} onChange={e=>field('max_tokens',Number(e.target.value))}/></label><label>Размер контекста, символов<input type="number" aria-label="Размер контекста" min={4000} max={40000} value={draft.context_chars} disabled={busy} onChange={e=>field('context_chars',Number(e.target.value))}/></label></div>
+    <label>Голос по умолчанию<select aria-label="Голос по умолчанию" value={draft.voice} disabled={busy} onChange={e=>field('voice',e.target.value)}>{!voices.some(v=>v.id===draft.voice)&&<option value={draft.voice}>{draft.voice}</option>}{voices.map(v=><option key={v.id} value={v.id}>{v.label}</option>)}</select></label>
+    <label>Скорость речи<input type="number" aria-label="Скорость речи" min={0.5} max={2} step={0.1} value={draft.tts_speed} disabled={busy} onChange={e=>field('tts_speed',Number(e.target.value))}/></label>
+    <label>Стартовый пример<textarea aria-label="Стартовый пример" rows={5} maxLength={4000} value={draft.demo_prompt} required disabled={busy} onChange={e=>field('demo_prompt',e.target.value)}/></label>
+    <h3>Модели в списке</h3>
+    <fieldset className="catalog-entry"><legend>Модель 1 · Основная</legend>
     <label>Название основной модели<input aria-label="Название основной модели" value={draft.model_label} maxLength={100} required disabled={busy} onChange={e=>field('model_label',e.target.value)}/></label>
     <label>Основная модель Yandex<input aria-label="Основная модель" value={draft.model} maxLength={150} required disabled={busy} onChange={e=>field('model',e.target.value)}/></label>
     <ReasoningModes value={draft} label="Проверенные режимы основной модели" disabled={busy} onChange={modes=>{field('reasoning_efforts',modes);field('reasoning_supported',modes.length>0);field('reasoning_effort','default');}}/>
     <label>Рассуждения по умолчанию<select aria-label="Рассуждения по умолчанию" value={canonicalReasoning(draft.reasoning_effort)} disabled={busy||!reasoningModes(draft).length} onChange={e=>field('reasoning_effort',e.target.value)}><option value="default">По умолчанию модели</option>{reasoningModes(draft).map(mode=><option key={mode} value={mode}>{REASONING_LABELS[mode]||mode}</option>)}</select></label>
-    <div className="configuration-grid"><label>Температура<input type="number" aria-label="Температура" min={0} max={1} step={0.05} value={draft.temperature} disabled={busy} onChange={e=>field('temperature',Number(e.target.value))}/></label><label>Максимум токенов<input type="number" aria-label="Максимум токенов" min={1} max={2000} value={draft.max_tokens} disabled={busy} onChange={e=>field('max_tokens',Number(e.target.value))}/></label><label>Размер контекста, символов<input type="number" aria-label="Размер контекста" min={4000} max={40000} value={draft.context_chars} disabled={busy} onChange={e=>field('context_chars',Number(e.target.value))}/></label></div>
-    <label>Голос по умолчанию<select aria-label="Голос по умолчанию" value={draft.voice} disabled={busy} onChange={e=>field('voice',e.target.value)}>{!config.voices.some(v=>v.id===draft.voice)&&<option value={draft.voice}>{draft.voice}</option>}{config.voices.map(v=><option key={v.id} value={v.id}>{v.label}</option>)}</select></label>
-    <label>Скорость речи<input type="number" aria-label="Скорость речи" min={0.5} max={2} step={0.1} value={draft.tts_speed} disabled={busy} onChange={e=>field('tts_speed',Number(e.target.value))}/></label>
-    <label>Основная инструкция<textarea aria-label="Основная инструкция" rows={5} maxLength={6000} value={draft.system_prompt} required disabled={busy} onChange={e=>field('system_prompt',e.target.value)}/></label><label>Стартовый пример<textarea aria-label="Стартовый пример" rows={5} maxLength={4000} value={draft.demo_prompt} required disabled={busy} onChange={e=>field('demo_prompt',e.target.value)}/></label>
-    <h3>Модели в списке</h3>{draft.models.map((m,i)=><fieldset className="catalog-entry" key={i}><legend>Модель {i+1}</legend><label>ID<input aria-label={`ID модели ${i+1}`} value={m.id} maxLength={60} required disabled={busy} onChange={e=>entry('models',i,'id',e.target.value)}/></label><label>Название<input aria-label={`Название модели ${i+1}`} value={m.label} maxLength={100} required disabled={busy} onChange={e=>entry('models',i,'label',e.target.value)}/></label><label>Модель Yandex<input aria-label={`Модель Yandex ${i+1}`} value={m.model} maxLength={150} required disabled={busy} onChange={e=>entry('models',i,'model',e.target.value)}/></label><ReasoningModes value={m} label={`Проверенные режимы модели ${i+1}`} disabled={busy} onChange={modes=>{entry('models',i,'reasoning_efforts',modes);entry('models',i,'reasoning_supported',modes.length>0);}}/><button type="button" className="catalog-remove" disabled={busy} onClick={()=>remove('models',i)}><Trash2 size={14}/>Удалить модель</button></fieldset>)}
+    </fieldset>
+    {draft.models.map((m,i)=><fieldset className="catalog-entry" key={i}><legend>Модель {i+2}</legend><label>ID<input aria-label={`ID модели ${i+2}`} value={m.id} maxLength={60} required disabled={busy} onChange={e=>entry('models',i,'id',e.target.value)}/></label><label>Название<input aria-label={`Название модели ${i+2}`} value={m.label} maxLength={100} required disabled={busy} onChange={e=>entry('models',i,'label',e.target.value)}/></label><label>Модель Yandex<input aria-label={`Модель Yandex ${i+2}`} value={m.model} maxLength={150} required disabled={busy} onChange={e=>entry('models',i,'model',e.target.value)}/></label><ReasoningModes value={m} label={`Проверенные режимы модели ${i+2}`} disabled={busy} onChange={modes=>{entry('models',i,'reasoning_efforts',modes);entry('models',i,'reasoning_supported',modes.length>0);}}/><button type="button" className="catalog-remove" disabled={busy} onClick={()=>remove('models',i)}><Trash2 size={14}/>Удалить модель</button></fieldset>)}
     <button type="button" className="catalog-add" disabled={busy||draft.models.length>=20} onClick={()=>field('models',[...draft.models,{id:'',label:'',model:'',reasoning_supported:false,reasoning_efforts:[]}])}><Plus size={14}/>Добавить модель</button>
-    <p className="prompt-help">Создание, редактирование и удаление инструкций доступны во вкладке «Промпты».</p>
     <small>Подтверждайте поддержку рассуждений только для проверенной модели. Используемые элементы списка нельзя удалить, пока они выбраны в разговорах.</small><button className="primary" disabled={busy}>Сохранить общую конфигурацию</button>
-   </form>{admin&&limits&&<p className="operating-limits">Лимиты API: {limits.daily_limit_rub} ₽ / день, {limits.monthly_limit_rub} ₽ / месяц. Лимиты расходов меняются во вкладке «Бюджет». Ключи остаются в защищённой конфигурации сервера.</p>}
+   </form>
+   <section className="configuration-version" aria-label="Текущая версия конфигурации">
+    <div><h3>Текущая версия конфигурации</h3><p>Версия {revision} · {activeVersion}</p>
+     <p>Загрузка заменит черновик сохранёнными настройками сервера.</p></div>
+    <button type="button" disabled={busy} onClick={()=>{setError('');load().catch(e=>setError(e.message));}}>Загрузить актуальную версию</button>
+   </section>{admin&&limits&&<p className="operating-limits">Лимиты API: {limits.daily_limit_rub} ₽ / день, {limits.monthly_limit_rub} ₽ / месяц. Лимиты расходов меняются во вкладке «Бюджет». Ключи остаются в защищённой конфигурации сервера.</p>}
   </>}
   {tab==='operations'&&admin&&<OperationsPanel api={api}/>}
   {tab==='budget'&&admin&&<BudgetPanel api={api}/>}
   {tab==='rag'&&admin&&<RagSettings api={api}/>}
-  {tab==='history'&&<div className="audit-list"><p>Загрузка старой версии создаёт черновик. Изменения вступят в силу только после сохранения общей конфигурации.</p>{history.map(item=><article key={item.revision}><strong>Версия {item.revision}</strong><span>{new Date(item.created*1000).toLocaleString()}</span><button type="button" disabled={busy} onClick={async()=>{setBusy(true);setError('');try{const old=await api(`/editor/config/versions/${item.revision}`);setDraft(old.config);setGlobalDirty(true);setTab('defaults');setNotice('Версия загружена в черновик. Сохраните, чтобы применить.');}catch(e){setError(e.message);}finally{setBusy(false);}}}>Загрузить как черновик</button></article>)}</div>}
+  {tab==='history'&&<div className="audit-list"><p>Загрузка старой версии создаёт черновик. Изменения вступят в силу только после сохранения общей конфигурации.</p>{history.map(item=><article key={item.revision}><strong>Версия {item.revision}</strong><span>{formatDateTime(item.created*1000)}</span><button type="button" disabled={busy} onClick={async()=>{setBusy(true);setError('');try{const old=await api(`/editor/config/versions/${item.revision}`);setDraft(old.config);setTab('defaults');setNotice('Версия загружена в черновик. Сохраните, чтобы применить.');}catch(e){setError(e.message);}finally{setBusy(false);}}}>Загрузить как черновик</button></article>)}</div>}
+  {tab==='audit'&&<div className="audit-list">{audit ? audit.length ? audit.map(event=><article key={event.id}>
+    <strong>{event.action}</strong><span>{formatDateTime(event.created*1000)} · {event.target}</span><code>{event.details}</code>
+  </article>) : <p>Изменений пока нет.</p> : <p role="status">Загружаем журнал…</p>}</div>}
+  </PanelTabs>
  </section></div>;
 }

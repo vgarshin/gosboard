@@ -38,37 +38,36 @@ def roles(tmp_path):
 def test_roles_enforced_and_editor_metadata_only(roles):
     c,app,p,access,login,s=roles
     login('user')
-    assert c.get('/api/me').json()['role']=='user'
     cid=c.post('/api/chats').json()['id']
     assert c.post(f'/api/chats/{cid}/messages',json={'text':'PRIVATE MESSAGE BODY','request_id':str(uuid4())}).status_code==200
     for route in ('/api/admin/users','/api/admin/audit','/api/editor/chats'):
         assert c.get(route).status_code==403
     assert c.post('/api/knowledge-bases',json={'name':'denied'}).status_code==403
-    assert c.put(f'/api/chats/{cid}/settings',json={'model_id':'alice-flash'}).status_code==403
-    assert c.post('/api/chats',json={'voice':'filipp'}).status_code==403
+    assert c.post('/api/chats',json={'voice':'filipp'}).status_code==422
+    login('editor')
+    assert c.get('/api/editor/chats').json()==[]
+    assert c.post('/api/knowledge-bases',json={'name':'denied'}).status_code==403
+    login('admin')
+    assert c.put('/api/management/spaces/initial/assignments',json={
+        'email':'editor@example.com','assigned':True,'management':True,
+    }).status_code==200
     login('editor')
     listing=c.get('/api/editor/chats').json()
-    assert listing[0]['title'].startswith('PRIVATE') # Titles are explicitly allowed.
-    assert set(listing[0])=={'id','title','user_id','email','updated','settings'}
+    assert listing[0]['title'].startswith('PRIVATE')
+    assert set(listing[0])=={'id','title','user_id','email','updated','settings','space_id'}
     assert c.get(f'/api/chats/{cid}/messages').status_code==404
     assert c.delete(f'/api/chats/{cid}').status_code==404
-    updated=c.put(f'/api/editor/chats/{cid}/model',json={'model_id':'alice-flash','voice':'filipp'})
-    assert updated.status_code==200,updated.text
-    assert updated.json()['settings']['voice']=='filipp'
     assert c.get('/api/admin/users').status_code==403
     bid=c.post('/api/knowledge-bases',json={'name':'Shared editorial base'}).json()['id']
     did=upload(c,bid)['id'];wait_document(c,bid,did)
     assert c.put(f'/api/knowledge-bases/{bid}/policy',json={'top_k':2}).status_code==403
     login('user')
-    opts=c.get('/api/chats').json()[0]['settings']
-    opts.update(rag_enabled=True,knowledge_base_id=bid)
-    assert c.put(f'/api/chats/{cid}/settings',json=opts).status_code==200
-    assert c.get(f'/api/knowledge-bases/{bid}/documents').status_code==200
+    assert c.get(f'/api/knowledge-bases/{bid}/documents').status_code==403
     assert c.post(f'/api/chats/{cid}/messages/{app.state.store.messages(cid)[-1]["id"]}/speech',json={'request_id':str(uuid4())}).status_code==200
     login('admin')
     assert c.get(f'/api/chats/{cid}/messages').status_code==404
     events=c.get('/api/admin/audit').json()
-    assert any(e['action']=='chat.model' for e in events)
+    assert any(e['action']=='space.assignment' for e in events)
     assert 'PRIVATE MESSAGE BODY' not in json.dumps(events)
 
 

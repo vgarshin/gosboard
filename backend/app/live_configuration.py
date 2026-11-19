@@ -57,12 +57,6 @@ class LiveConfiguration:
             if revision != update.expected_revision:
                 raise HTTPException(409, 'Конфигурация уже изменена. Загрузите актуальную версию перед сохранением')
             candidate = update.config.model_copy(update={'version': f'live-{revision + 1}'})
-            # Do not strand existing conversations by removing their selected catalog entries/capabilities.
-            for row in db.execute('SELECT settings FROM chat_settings'):
-                try:
-                    candidate.resolve(ChatOptions.model_validate_json(row['settings']))
-                except ValueError:
-                    raise HTTPException(409, 'Существующий разговор использует удаляемую модель/инструкцию или режим рассуждений. Сначала измените настройки разговора') from None
             db.execute('INSERT INTO live_config_versions VALUES (?,?,?,?)',
                        (revision + 1, candidate.model_dump_json(), actor, time.time()))
             db.execute('UPDATE live_config_state SET revision=? WHERE id=1', (revision + 1,))

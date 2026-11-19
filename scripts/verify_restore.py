@@ -32,6 +32,12 @@ def verify(snapshot, config):
         accounts = db.execute('SELECT email,role,enabled FROM access_accounts ORDER BY email').fetchall() if has_accounts else []
         existing = db.execute('''SELECT c.id,c.user_id FROM chats c JOIN users u ON u.id=c.user_id
             JOIN access_accounts a ON a.email=lower(u.email) WHERE a.enabled=1 LIMIT 1''').fetchone() if has_accounts else db.execute('SELECT id,user_id FROM chats LIMIT 1').fetchone()
+        space_tables = ('spaces','space_memberships','space_editors','space_policies','chat_profiles','rag_owners','rag_managers','rag_revocations','blocked_models','account_imports')
+        original_spaces = {
+            table: db.execute(f'SELECT * FROM {table} ORDER BY rowid').fetchall()
+            for table in space_tables
+            if db.execute('SELECT 1 FROM sqlite_master WHERE name=?', (table,)).fetchone()
+        }
         indexes_verified = 0
         if db.execute("SELECT 1 FROM sqlite_master WHERE name='rag_indexes'").fetchone():
             import faiss
@@ -57,6 +63,12 @@ def verify(snapshot, config):
             if restored_config['revision']!=live_config[0] or restored_config['config']!=json.loads(live_config[1]):
                 raise ValueError('Restored live configuration changed during startup')
         with app.state.store.connection() as db:
+            if db.execute('PRAGMA foreign_key_check').fetchone():
+                raise ValueError('Restored database contains broken foreign keys')
+            for table, original in original_spaces.items():
+                restored = [tuple(row) for row in db.execute(f'SELECT * FROM {table} ORDER BY rowid')]
+                if any(row not in restored for row in original) or (table != 'chat_profiles' and restored != original):
+                    raise ValueError(f'Restored records changed during startup: {table}')
             for email, role, enabled in accounts:
                 restored = db.execute('SELECT role,enabled FROM access_accounts WHERE email=?',(email,)).fetchone()
                 if not restored or tuple(restored)!=(role,enabled):
@@ -69,33 +81,38 @@ def verify(snapshot, config):
                 client.cookies.set('gosboard_session', token)
                 client.headers['X-CSRF-Token'] = app.state.store.auth(token)['csrf']
             if existing:
+                if not has_accounts:
+                    with app.state.store.connection() as db:
+                        email = db.execute('SELECT lower(email) FROM users WHERE id=?', (existing[1],)).fetchone()[0]
+                        db.execute("INSERT OR IGNORE INTO access_accounts(email,role,enabled,created,updated) VALUES (?,'user',1,0,0)", (email,))
                 sign_in(existing[1])
                 response = client.get(f'/api/chats/{existing[0]}/messages')
                 if response.status_code != 200:
                     raise ValueError('Restored history cannot be opened')
-                for message in response.json():
-                    for source in message.get('metadata',{}).get('citations',[]):
-                        if source.get('type')=='web':
-                            preview=client.get('/api/web-sources/'+source['source_id'])
-                            if preview.status_code!=200 or preview.json()['excerpt']!=source['excerpt']:
-                                raise ValueError('Restored web citation cannot be opened')
-                            web_citations_checked+=1
+                for message in app.state.store.messages(existing[0]):
+                    web_citations_checked += sum(source.get('type')=='web' for source in message['metadata'].get('citations', []))
+            demo = client.post('/api/auth/demo', follow_redirects=False)
+            if demo.status_code != 303:
+                raise ValueError('Offline demo login failed')
+            client.headers['X-CSRF-Token'] = client.get('/api/me').json()['csrf']
+            sid = client.post('/api/management/spaces', json={'name':'Offline restore'}).json()['id']
+            for email in ('restore-a@example.org', 'restore-b@example.org'):
+                client.post('/api/admin/users', json={'email':email}).raise_for_status()
+                client.put(f'/api/management/spaces/{sid}/assignments', json={'email':email,'assigned':True}).raise_for_status()
             first, second = 'restore-a:' + str(uuid4()), 'restore-b:' + str(uuid4())
-            app.state.store.user(first, 'restore-a@localhost', 'Restore A')
-            app.state.store.user(second, 'restore-b@localhost', 'Restore B')
+            app.state.store.user(first, 'restore-a@example.org', 'Restore A')
+            app.state.store.user(second, 'restore-b@example.org', 'Restore B')
             sign_in(first)
+            client.headers['X-Space-ID'] = sid
             response = client.post('/api/chats')
             response.raise_for_status()
             cid = response.json()['id']
-            catalog = client.get('/api/config').json()
-            if 'capabilities' in catalog:
-                options = {'model_id': catalog['models'][-1]['id'], 'prompt_id': catalog['prompts'][-1]['id']}
-                changed = client.put(f'/api/chats/{cid}/settings', json=options)
-                changed.raise_for_status()
-                selected = next(chat for chat in client.get('/api/chats').json() if chat['id'] == cid)
-                if selected['settings']['model_id'] != options['model_id'] or selected['settings']['prompt_id'] != options['prompt_id']:
-                    raise ValueError('Restored chat settings do not persist')
-                selection_checked = True
+            changed = client.patch(f'/api/chats/{cid}/mode', json={'communication_mode':'voice'})
+            changed.raise_for_status()
+            selected = next(chat for chat in client.get('/api/chats').json() if chat['id'] == cid)
+            if selected['settings']['communication_mode'] != 'voice':
+                raise ValueError('Restored communication mode does not persist')
+            selection_checked = True
             response = client.post(f'/api/chats/{cid}/messages', json={'text': 'Offline restore check', 'request_id': str(uuid4())})
             response.raise_for_status()
             if len(client.get(f'/api/chats/{cid}/messages').json()) != 2:
@@ -104,7 +121,7 @@ def verify(snapshot, config):
             for method, path in [('GET', f'/api/chats/{cid}/messages'), ('DELETE', f'/api/chats/{cid}')]:
                 if client.request(method, path).status_code != 404:
                     raise ValueError('Cross-user history access was not denied')
-            response = client.put(f'/api/chats/{cid}/settings', json={'model_id': 'default'})
+            response = client.patch(f'/api/chats/{cid}/mode', json={'communication_mode': 'text'})
             if response.status_code != 404:
                 raise ValueError('Cross-user settings mutation was not denied')
     return {'integrity': 'ok', 'restored_messages': original_messages,

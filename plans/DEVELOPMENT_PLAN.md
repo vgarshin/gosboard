@@ -459,3 +459,55 @@ Owner confirms live dialog works and needs spoken interruption. First update pro
 Next implementation priority is echo-aware spoken interruption in live mode, preserving all existing modes and an alternating-turn fallback. Detect confirmed user speech locally during playback, stop queued/current audio and synthesis, cancel unfinished generation, preserve utterance onset, then capture the new question exactly once using existing pause tolerance. Never submit assistant echo, weaken citation validation, silently discard cancelled-question context or treat partial answers as completed history. Define interrupted playback vs generation and saved-history/export behavior explicitly. Keep microphone status truthful and preserve session/role/owner/cost controls. See LIVE_DIALOG_PLAN.md section C for requirements and acceptance. Streaming STT follows later and is not required for interruption. Physical speaker/headset rehearsal is still needed; compaction and broad answer-quality review remain backlog.
 
 Documentation-first interruption update verified: frontend build and manual source/bundle equality passed. Production regular-user popup checks confirmed the current workaround and clearly labelled planned interruption, navigation/Escape/focus return, retained draft and mobile layout, with no paid calls. Frontend-only redeploy; interruption behavior and backend were unchanged. README summaries were refreshed to the current three-mode state.
+
+## Spaces and revised role boundaries — planning request, 2026-11-18
+
+Owner requested a plan for one working space per user, predefined space settings, editor management/assignment and admin-only creation/deletion/global catalogs/advanced search/access roles. See [SPACES_PLAN.md](SPACES_PLAN.md). This is a draft with unresolved policy, migration, editor-scope, knowledge-access and deletion decisions; no runtime changes or migration are authorized by the planning request. Existing live dialog and shared knowledge-base behavior remain current until a reviewed implementation changes them. Spoken interruption remains separately planned; ordering is unresolved.
+
+### Spaces decisions confirmed — 2026-11-18
+
+Owner chose space settings for new chats only; existing chats keep independent settings snapshots. On reassignment, old chats remain in the original space, read-only to their owner. Editors manage only admin-assigned spaces. One RAG base may connect to multiple spaces without duplicating the index. Space deletion requires participant reassignment and typed-name confirmation, then archives the space/history. Prompts belong to individual spaces, with no shared mutable prompt. See SPACES_PLAN.md for revised snapshot/migration rules. Editor account-admission powers and access to unconnected global bases remain open questions; no runtime implementation or deployment in this planning step.
+
+### Final space access clarifications — 2026-11-18
+
+Owner confirmed: editors only allocate already-approved regular users within their assigned management scope; admission, disabling/deleting accounts and roles remain admin-only. Users may use only bases connected to their admitted working space and cannot manage space/database connections. Editors may connect existing bases and set the space Internet option; connection privileges do not grant shared-base/document creation, upload, editing or deletion. A shared base may connect to multiple spaces; removing one connection cannot delete the base or affect other spaces. Direct document/chunk/cache access must enforce current connections independently of old chat snapshots. Main planning questions are resolved; runtime is unchanged.
+
+### Minimal end-user experience — 2026-11-18
+
+Owner clarified: users work in an editor-preconfigured assigned space and see only a minimal chat with communication-mode/basic interaction controls. No space/base selector, Internet/RAG switches, advanced settings or source/citation previews for the ordinary user. Editors own source selection and configuration. Source-based generation and full server-side citation validation/provenance are retained internally; ordinary-role API/stream/export projections must not expose hidden source metadata, chunks or catalogs. Preserve the underlying history rather than deleting provenance. No runtime changes in this planning update.
+
+### Pending admission after Yandex login — 2026-11-18
+
+Owner specified self-registration through Yandex OAuth: a new verified identity gets pending status rather than chat access. Admins admit accounts and set roles; editors only allocate already-admitted regular users to their managed spaces. Pending sessions expose only own identity/status/logout and cannot reach chats, catalogs, sources or paid operations. An active account without a working space waits for allocation. Repeat login preserves pending/active/disabled state and never self-assigns roles. Migration must preserve existing admissions, disabled accounts and the last/bootstrap admin. This remains part of the spaces plan, not an implemented login change.
+
+### Admin bulk user creation — 2026-11-18
+
+Owner requested admin-only list upload through the user-management UI. Add a CSV template, bounded server-side validation, per-row preview, duplicate/existing-account handling, explicit confirmation and downloadable results. Recommended default creates pending accounts; a separate explicit admin choice can admit users and assign roles during import. Existing active/disabled accounts must not be overwritten by bulk creation; approval of existing pending entries is separately selected. Repeated confirmation is idempotent and audited. Imported email still requires verified Yandex login. No paid calls or automatic invitations. See SPACES_PLAN.md; this is planned, not implemented.
+
+### Superseding spaces revision: multiple memberships and editor RAG creation — 2026-11-18
+
+Owner replaced the one-space rule: every role may belong to multiple spaces and use independent chats in each. Entry offers name/description cards; users can switch among memberships. Editor/admin ordinary chat UI and membership checks are identical to regular users; management is separate and grants no implicit chat membership. Active context is per tab/request, not one global account field. Switching must preserve separate drafts/history and stop only that tab's live work; other tabs remain independent.
+
+Space deletion no longer requires reassignment: typed-name confirmation archives the space, deactivates its memberships and retains history. Other memberships survive; accounts with none stay active/idle, not pending or deleted. Editors may now create/connect RAG but cannot change chunk size, overlap, top-K or advanced parameters. Document-management rights on a shared RAG are being clarified (recommended creator/explicit managers); earlier connector-only restrictions are superseded. CSV import must support multiple space_ids. SPACES_PLAN.md is rewritten to these latest decisions; no runtime changes, migration or deployment yet.
+
+### Dedicated editor RAG/document management confirmed — 2026-11-18
+
+Owner confirmed editors may upload and manage RAG documents in a dedicated menu/interface section, separate from the minimal chat used by all roles. Plan create/manage RAG, document upload/status/replacement/deletion/retry and space connections, scoped to permitted RAG management. Chunk size, overlap, top-K, embedding settings and advanced reindex configuration remain admin-only, including direct API calls. Changes to a shared base affect retrieval in its connected spaces; saved answers/citations are retained. The proposed creator/explicit-manager ACL is an implementation detail, not blanket authority over every global base. No runtime changes in this planning update.
+
+### Spaces plan review — 2026-11-18
+
+Reviewed the complete plan against current per-chat settings, global model/prompt resolution, single-base retrieval and global document endpoints. Main membership/role/UI requirements remain consistent. Added explicit work for full immutable snapshots, multi-base retrieval if selected, ordinary-chat API/export/stream projections, per-tab versus membership cancellation and legacy RAG-manager migration. Five owner decisions remain: shared-base document ACL, multi-base search behavior, document versions for old chats, account deletion retention, and whether unlinking a RAG affects old snapshots. The latter conflicts with new-chats-only if treated as immediate revocation; configuration changes and explicit revocation must be separated if old chats retain their saved RAG. Recommendations are pending, not approved. No runtime changes or deployment.
+
+### Spaces review decisions confirmed — 2026-11-18
+
+Owner approved all five review recommendations: shared RAG document management belongs to its creator/explicit managers and admins; search all configured permitted RAG bases and also the Internet when enabled, combining results within shared source/context limits and a global RAG top-K; old chats retrieve current documents without rewriting saved answers; account deletion revokes access while retaining history, with permanent erasure separate; ordinary RAG unlink affects new chats only, while a separate explicit admin revocation blocks old snapshots too. Existing membership, account/space status, budget and source-validation checks remain mandatory. SPACES_PLAN.md is authoritative; the pending questions in the previous entry are resolved. Planning update only: no application changes, migration or deployment.
+
+
+### Выпуск Spaces и цитат — 2026-11-20
+
+- [x] Развернуть Spaces и обновлённый интерфейс на aitalks.tech. Сохранить настройки старых чатов и проверить восстановление из резервной копии.
+- [x] Показывать владельцу активного чата сохранённые цитаты RAG и Интернета с проверкой доступа к фрагментам.
+- [x] Проверить на продакшене открытие обоих типов цитат, отзыв членства, удалённый источник, запрет доступа к чужой цитате и оригиналу RAG. Проверить, что архив и экспорт содержат текст без технических цитат.
+- [ ] Пройти реальный вход через Яндекс ID после миграции и проверить выбор назначенного пространства.
+- [ ] Проверить живой диалог с физическим микрофоном и динамиками, включая переключение пространства.
+- [ ] Реализовать перебивание голосом по [плану живого диалога](LIVE_DIALOG_PLAN.md). Сжатие истории и общий обзор качества ответов остаются в backlog.

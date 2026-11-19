@@ -67,7 +67,11 @@ def send(client, cid, text='Привет', rid=None, **extra):
 
 
 def switch_user(client, app, name):
-    app.state.store.user(name, f'{name}@localhost', name)
+    email = f'{name}@example.org'
+    with app.state.store.connection() as db:
+        db.execute("INSERT OR IGNORE INTO access_accounts(email,role,enabled,created,updated) VALUES (?,'user',1,0,0)", (email,))
+        db.execute("INSERT OR IGNORE INTO space_memberships(email,space_id) VALUES (?,'initial')", (email,))
+    app.state.store.user(name, email, name)
     token = app.state.store.session(name, 3600)
     client.cookies.clear()
     client.cookies.set('gosboard_session', token)
@@ -83,7 +87,8 @@ def test_chat_roundtrip_and_context(setup):
     assert [m['role'] for m in messages] == ['user', 'assistant', 'user', 'assistant']
     assert provider.last_messages[-1]['text'] == 'Продолжи'
     assert len(provider.last_messages) == 4
-    assert messages[1]['metadata']['config_version'] == AppConfig.model_validate_json(CONFIG.read_text()).version
+    assert 'config_version' not in messages[1]['metadata']
+    assert app.state.store.messages(cid)[1]['metadata']['config_version'] == AppConfig.model_validate_json(CONFIG.read_text()).version
     reopened = Store(app.state.settings.data_dir)
     assert len(reopened.messages(cid)) == 4
 
@@ -261,7 +266,7 @@ def test_cache_cleanup(tmp_path):
     assert store.get_cache('large', 'u') is None
 
 
-def test_oauth_pkce_allowlist_and_replay(tmp_path):
+def test_oauth_pkce_replay_and_pending_admission(tmp_path):
     from urllib.parse import parse_qs, urlparse
     import httpx
 
@@ -269,6 +274,7 @@ def test_oauth_pkce_allowlist_and_replay(tmp_path):
         def __init__(self):
             super().__init__()
             self.email = 'admin@example.com'
+            self.uid = '123'
             self.token_payload = None
 
         async def request(self, method, url, **kwargs):
@@ -276,7 +282,7 @@ def test_oauth_pkce_allowlist_and_replay(tmp_path):
                 self.token_payload = kwargs['data']
                 return httpx.Response(200, json={'access_token': 'fake-oauth-token'})
             assert kwargs['headers']['Authorization'] == 'OAuth fake-oauth-token'
-            return httpx.Response(200, json={'id': '123', 'default_email': self.email, 'display_name': 'Admin'})
+            return httpx.Response(200, json={'id': self.uid, 'default_email': self.email, 'display_name': 'Admin'})
 
     settings = live_settings(tmp_path)
     provider = OAuthProvider()
@@ -298,6 +304,32 @@ def test_oauth_pkce_allowlist_and_replay(tmp_path):
         provider.email = 'outsider@example.com'
         denied = client.get('/api/auth/callback?code=code&state=' + state, follow_redirects=False)
         assert denied.headers['location'] == '/?auth_error=denied'
+        assert client.get('/api/me').json()['admin'] is True
+
+        def outsider_login():
+            start = client.get('/api/auth/yandex', follow_redirects=False)
+            state = parse_qs(urlparse(start.headers['location']).query)['state'][0]
+            return client.get('/api/auth/callback?code=code&state=' + state, follow_redirects=False)
+
+        provider.uid = '456'
+        assert outsider_login().headers['location'] == '/'
+        pending = client.get('/api/me').json()
+        assert pending['status'] == 'pending' and pending['role'] is None
+        assert client.get('/api/config').status_code == 403
+        assert client.get('/api/spaces').status_code == 403
+        assert outsider_login().headers['location'] == '/'
+        assert client.get('/api/me').json()['status'] == 'pending'
+        admin_token = app.state.store.session('yandex:123', 3600)
+        admin_headers = {'Cookie': f'gosboard_session={admin_token}', 'Origin': settings.origin,
+                         'X-CSRF-Token': app.state.store.auth(admin_token)['csrf']}
+        response = client.put('/api/admin/users', headers=admin_headers,
+                              json={'email':'outsider@example.com','role':'user'})
+        assert response.status_code == 200
+        assert client.get('/api/me').json()['status'] == 'active'
+        assert client.get('/api/spaces').json() == []
+        assert client.put('/api/admin/users', headers=admin_headers,
+                          json={'email':'outsider@example.com','enabled':False}).status_code == 200
+        assert outsider_login().headers['location'] == '/?auth_error=denied'
 
 
 def test_cancel_preserves_uncertain_budget(tmp_path):
@@ -402,54 +434,50 @@ def test_provider_contracts(tmp_path):
 
 
 def test_per_chat_settings_persist_and_drive_generation(setup):
-    from app.configuration import ChatOptions
     import json
+    from space_helpers import configure_space
     client, app, provider = setup
+    configure_space(client, model_id='alice-flash')
     cid = create_chat(client)
-    options = ChatOptions(model_id='alice-flash', prompt_id='peter-council').model_dump()
-    response = client.put(f'/api/chats/{cid}/settings', json=options)
-    assert response.status_code == 200, response.text
-    assert response.json()['settings'] == options
-    assert client.get('/api/chats').json()[0]['settings'] == options
-    assert Store(app.state.settings.data_dir).chat(cid, 'demo')['settings'] == options
-    send(client, cid)
+    configure_space(client, model_id='default')
+    assert client.patch(f'/api/chats/{cid}/mode', json={'communication_mode':'voice'}).status_code == 200
+    assert 'model_id' not in client.get('/api/chats').json()[0]['settings']
+    assert Store(app.state.settings.data_dir).chat(cid, 'demo')['settings']['model_id'] == 'alice-flash'
+    assert send(client, cid).status_code == 200
     assert provider.last_config.model == 'aliceai-llm-flash'
-    assert 'условность реконструкции' in provider.last_messages[0]['text']
     metadata = app.state.store.messages(cid)[1]['metadata']
-    assert metadata['chat_settings'] == options
     assert metadata['model_label'] == 'Alice AI LLM Flash'
     with app.state.store.connection() as db:
         row = db.execute('SELECT snapshot FROM configurations WHERE hash=?', (metadata['config_hash'],)).fetchone()
     assert json.loads(row['snapshot'])['system_prompt'] == provider.last_config.system_prompt
-    client.put(f'/api/chats/{cid}/settings', json=ChatOptions().model_dump())
-    assert app.state.store.messages(cid)[1]['metadata'] == metadata
 
 
 def test_settings_reject_unavailable_tools_and_cross_user_mutation(setup):
     client, app, provider = setup
     cid = create_chat(client)
     original = client.get('/api/chats').json()[0]['settings']
-    assert client.put(f'/api/chats/{cid}/settings',json={'web_search_enabled':True}).status_code==409
-    for invalid in [{'model_id': 'invented'}, {'prompt_id': 'invented'}, {'rag_enabled': True},
-                    {'knowledge_base_id': 'private'}, {'system_prompt': 'override'}]:
-        assert client.put(f'/api/chats/{cid}/settings', json=invalid).status_code == 422
+    for invalid in [{'model_id':'invented'}, {'prompt_id':'invented'}, {'rag_enabled':True},
+                    {'knowledge_base_id':'private'}, {'system_prompt':'override'}, {'web_search_enabled':True}]:
+        assert client.patch(f'/api/chats/{cid}/mode', json=invalid).status_code == 422
     assert client.get('/api/chats').json()[0]['settings'] == original
     switch_user(client, app, 'another')
-    assert client.put(f'/api/chats/{cid}/settings', json={'model_id': 'alice-flash'}).status_code == 404
+    assert client.patch(f'/api/chats/{cid}/mode', json={'communication_mode':'voice'}).status_code == 404
     assert provider.llm_calls == provider.tts_calls == provider.stt_calls == 0
 
 
 def test_chat_creation_options_and_cache_settings_scope(setup):
+    from space_helpers import configure_space
     client, app, provider = setup
-    a = client.post('/api/chats', json={'model_id': 'default'}).json()['id']
-    b = client.post('/api/chats', json={'model_id': 'alice-flash'}).json()['id']
-    c = client.post('/api/chats', json={'prompt_id': 'peter-council'}).json()['id']
-    for cid in (a, b, c):
+    chats = []
+    for model in ('default','alice-flash','alice-llm'):
+        configure_space(client, model_id=model)
+        chats.append(create_chat(client))
+    for cid in chats:
         result = send(client, cid)
         assert result.status_code == 200
         assert result.json()['metadata']['cached'] is False
     assert provider.llm_calls == 3
-    assert client.post('/api/chats', json={'rag_enabled': True}).status_code == 422
+    assert client.post('/api/chats', json={'rag_enabled':True}).status_code == 422
 
 
 def test_old_database_migration_preserves_history(tmp_path):
@@ -466,13 +494,14 @@ def test_old_database_migration_preserves_history(tmp_path):
     assert len(Store(tmp_path).chats('u')) == 2
 
 
-def test_catalog_remains_admin_owned_and_available_options_are_public(setup):
+def test_catalog_remains_admin_owned_and_hidden_from_public_config(setup):
     client, app, provider = setup
     config = client.get('/api/config').json()
-    assert config['capabilities'] == {'rag': False, 'web_search': False}
-    assert len(config['models']) == 3 and len(config['prompts']) == 2
-    assert 'system_prompt' not in config['prompts'][1]
-    assert client.put('/api/config', json={'model': 'injected'}).status_code == 405
+    assert not {'models','prompts','knowledge_bases','capabilities'} & config.keys()
+    assert len(client.get('/api/management/spaces/initial/policy').json()['models']) == 3
+    switch_user(client, app, 'another')
+    assert client.get('/api/admin/config').status_code == 403
+    assert client.get('/api/management/spaces/initial/policy').status_code == 403
 
 
 def test_restore_rehearsal_uses_copy_and_no_providers(tmp_path):

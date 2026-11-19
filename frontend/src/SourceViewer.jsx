@@ -1,22 +1,35 @@
+import {formatDateTime} from './dateTime';
 import React, {useEffect, useState, useRef} from 'react';
 import {ArrowLeft, FileText, X} from 'lucide-react';
 
-export function SourceViewer({chunkId, embedded = false, kind = 'rag', initialSource = null}) {
+export function SourceViewer({chunkId, embedded = false, kind = 'rag', initialSource = null, preview, spaceId}) {
   const [source, setSource] = useState(null);
   const [error, setError] = useState('');
   useEffect(() => {
     let live = true;
     setSource(null); setError('');
     if(initialSource){setSource(initialSource);return ()=>{live=false;};}
-    fetch(`/api/${kind==='web'?'web-sources':'sources'}/${encodeURIComponent(chunkId)}`).then(async response => {
+    const url = preview || '/api/' + (kind === 'web' ? 'web-sources' : 'sources') + '/' + encodeURIComponent(chunkId);
+    fetch(url, {headers: spaceId ? {'X-Space-ID':spaceId} : {}}).then(async response => {
       const body = await response.json();
       if (!response.ok) throw new Error(body.detail || 'Источник недоступен');
       if (live) setSource(body);
     }).catch(e => {if (live) setError(e.message);});
     return () => {live = false;};
-  }, [chunkId, kind, initialSource]);
+  }, [chunkId, kind, initialSource, preview, spaceId]);
+  if (preview) return <div className="source-page source-embedded">
+    {error ? <p className="error" role="alert">{error}</p> : source ? <article>
+      <h1><FileText size={25}/>{source.title}</h1>
+      <p className="source-note">{source.type === 'rag' ? 'Сохранённый фрагмент документа'
+        : source.content_kind === 'page_excerpt' ? 'Сохранённый фрагмент страницы' : 'Сохранённый поисковый фрагмент'}</p>
+      {source.page && <p className="source-location">Страница {source.page}</p>}
+      {source.fetched_at && <p className="source-location">Найдено: {formatDateTime(source.fetched_at * 1000)}</p>}
+      <mark className="source-excerpt">{source.excerpt}</mark>
+      {source.type === 'web' && <a className="primary" href={source.url} target="_blank" rel="noopener noreferrer">Открыть страницу</a>}
+    </article> : <p role="status">Открываем источник…</p>}
+  </div>;
   return <div className={embedded ? "source-page source-embedded" : "source-page"}>{!embedded && <a href="/" className="source-back"><ArrowLeft size={16}/>К разговорам</a>}{error ? <div className="error" role="alert">{error}</div> : source ? <article><span className="eyebrow">{kind==='web'?(source.content_kind==='page_excerpt'?'ИНТЕРНЕТ · ТЕКСТ СТРАНИЦЫ':'ИНТЕРНЕТ · ПОИСКОВЫЙ ФРАГМЕНТ'):`ИСТОЧНИК · ${source.base_name}`}</span><h1><FileText size={25}/>{source.title}</h1>
-    {kind==='web'?<><p className="source-location">Найдено: {new Date(source.fetched_at*1000).toLocaleString()}</p><p className="source-query">Запрос: {source.query}</p>{source.content_kind==='page_excerpt'?<><p className="source-location">Страница прочитана: {new Date(source.page_fetched_at*1000).toLocaleString()}{source.page_cached?' · из кеша':''}</p><p className="source-note">Показан выбранный фрагмент текста страницы, использованный для ответа.</p></>:<p className="source-note">{source.page_status&&source.page_status!=='not_requested'?'Текст страницы недоступен; использован фрагмент поисковой выдачи.':'Показан фрагмент поисковой выдачи. Полная страница не загружалась.'}</p>}</>:<p className="source-location">{source.page ? `Страница ${source.page}` : 'Без нумерации страниц'} · фрагмент {chunkId.slice(0, 8)}</p>}
+    {kind==='web'?<><p className="source-location">Найдено: {formatDateTime(source.fetched_at*1000)}</p><p className="source-query">Запрос: {source.query}</p>{source.content_kind==='page_excerpt'?<><p className="source-location">Страница прочитана: {formatDateTime(source.page_fetched_at*1000)}{source.page_cached?' · из кеша':''}</p><p className="source-note">Показан выбранный фрагмент текста страницы, использованный для ответа.</p></>:<p className="source-note">{source.page_status&&source.page_status!=='not_requested'?'Текст страницы недоступен; использован фрагмент поисковой выдачи.':'Показан фрагмент поисковой выдачи. Полная страница не загружалась.'}</p>}</>:<p className="source-location">{source.page ? `Страница ${source.page}` : 'Без нумерации страниц'} · фрагмент {chunkId.slice(0, 8)}</p>}
     <mark className="source-excerpt">{kind==='web'?source.excerpt:source.text}</mark>
     {kind==='web'?<><a className="primary" href={source.url} target="_blank" rel="noopener noreferrer">Открыть страницу</a><p className="source-url">{source.url}</p></>:<a className="primary" download href={source.document_url}>Скачать оригинал{source.page ? ` · цитата на стр. ${source.page}` : ''}</a>}
   </article> : <p>Открываем источник…</p>}</div>;
@@ -63,7 +76,7 @@ export function SourceModal({chunkId, onClose}) {
   return <div className="modal-backdrop source-backdrop" onClick={event => {if (event.target === event.currentTarget) onClose();}}>
     <section ref={dialog} className="modal source-modal" role="dialog" aria-modal="true" aria-label="Источник ответа">
       <button type="button" className="icon-button modal-close" aria-label="Закрыть источник" onClick={onClose}><X size={20}/></button>
-      <SourceViewer chunkId={reference.id} kind={reference.type} initialSource={reference.source} embedded/>
+      <SourceViewer chunkId={reference.id} kind={reference.type} initialSource={reference.source} preview={reference.preview} spaceId={reference.spaceId} embedded/>
     </section>
   </div>;
 }

@@ -7,12 +7,12 @@ Lightweight Russian-language AI chat with text and voice conversations, persiste
 - **Text:** manual sending, streamed replies, optional playback and classic whole-answer delivery.
 - **Voice:** record and press Stop to send automatically; optional transcription review before sending.
 - **Live dialog:** explicitly start listening, ask a question and pause; the app answers aloud and listens again after playback. Pause/Stop are always available. The microphone is off while answering.
-- **Sources:** Internet and RAG can be enabled separately or together. Select a shared knowledge base; open saved URL/document/chunk citations in a popup. Source-based speech waits for citation validation.
-- **Documents:** editors/admins upload PDF, TXT, DOC and DOCX. All allowed users can select global knowledge bases.
+- **Spaces:** membership controls working access. Each space has its own chats and a policy whose effective settings are captured when a chat is created. Removed or archived memberships leave owner-readable history.
+- **Sources and documents:** managers upload PDF, TXT, DOC and DOCX. Space policies can combine several shared bases with web search. Citation validation precedes sourced speech. Active chat owners can open saved excerpts and follow public web links. Full RAG documents require management access. Exports contain the conversation text.
 - **Configuration:** YandexGPT/Alice model and prompt catalogs, voice settings, history limits, role management and budget controls. Runtime settings are stored in SQLite and changed through the application.
 - **Operations:** local response/audio caching, bounded paid operations, cancellation, chat export (Markdown/TXT/JSON), verified local/S3 backups and restore checks.
 
-Yandex ID provides authentication. Users own their chats; administrators can read every user's messages through an audited viewer. Editors can see foreign chat titles and change model/prompt/voice settings without reading messages.
+Yandex ID provides authentication. First-time accounts wait for administrator approval. Administrators can read user messages through an audited viewer. Assigned editors can manage space policies for new conversations and view existing chat titles and settings in their managed spaces.
 
 **Next priority: spoken interruption.** It is planned, not implemented. Current live dialog alternates listening and answering; use Pause/Stop sound, then Resume to clarify. Streaming recognition, Cloud.ru/GigaChat and remote caching remain later work. Compaction and broad answer-quality review remain backlog. See the [live-dialog plan](plans/LIVE_DIALOG_PLAN.md).
 

@@ -47,7 +47,7 @@ Provider secrets, production environment files, TLS private keys, and transient 
 3. For an actual recovery, stop the backend deliberately and restore the database into an **empty** app data volume with ownership `10001:10001`. Restore the matching non-secret config and provision credentials from their secure external store. An empty volume avoids stale WAL files. Preserve the previous volume until verification completes.
 4. Start the application, sign in again, open an existing chat, confirm its settings, and save a new turn. Restored sessions are deliberately invalidated. Do not overwrite a database while its process is running.
 
-For a source rollback without database recovery, this release keeps the original chat table unchanged. Restore the earlier image and its matching configuration; the new settings/configuration tables can remain unused. A disaster recovery discards changes made after the selected snapshot, so use it only when intended.
+For rollback across Spaces, restore the previous images with a verified pre-Spaces database and its matching configuration. Earlier backends do not enforce space membership. A recovery snapshot taken after stopping traffic at cutover preserves the latest pre-migration state. After reopening the site, restoring that snapshot discards writes made after cutover.
 
 ## Manual off-VM safety copy
 

@@ -8,7 +8,7 @@ export function useDialog(onClose) {
    if(dialogs[dialogs.length-1]!==ref.current)return;
    if(e.key==='Escape'){e.preventDefault();e.stopPropagation();onClose();return;}
    if(e.key!=='Tab')return;
-   const nodes=[...ref.current.querySelectorAll('button,input,select,textarea,a[href]')].filter(node=>!node.disabled&&node.offsetParent!==null);
+   const nodes=[...ref.current.querySelectorAll('button,input,select,textarea,a[href]')].filter(node=>!node.disabled&&node.tabIndex>=0&&node.offsetParent!==null);
    const first=nodes[0],last=nodes[nodes.length-1];
    if(e.shiftKey&&(document.activeElement===first||!nodes.includes(document.activeElement))){e.preventDefault();last?.focus();}
    else if(!e.shiftKey&&(document.activeElement===last||!nodes.includes(document.activeElement))){e.preventDefault();first?.focus();}

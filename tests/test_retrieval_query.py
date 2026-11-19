@@ -1,3 +1,4 @@
+from space_helpers import stored_answer, configure_space, configure_space_async
 import asyncio
 import json
 from uuid import uuid4
@@ -13,7 +14,7 @@ from test_rag import ready_base
 @pytest.mark.parametrize('rag,web',[(False,True),(True,False),(True,True)])
 def test_trump_followup_uses_context_for_both_retrievers(web_setup,rag,web):
     c,app,p=web_setup;bid=ready_base(c)[0] if rag else None
-    cid=new_chat(c);app.state.store.add_turn(cid,'Кто такой Трамп?','Дональд Трамп — политик.',{})
+    cid=new_chat(c,rag,web,bid);app.state.store.add_turn(cid,'Кто такой Трамп?','Дональд Трамп — политик.',{})
     original=p.complete;rewrites=[];queries=[]
     async def complete(messages,config):
         if QUERY_CONTRACT in messages[0]['text']:
@@ -24,28 +25,28 @@ def test_trump_followup_uses_context_for_both_retrievers(web_setup,rag,web):
         return await original(messages,config)
     p.complete=complete
     retrieve=app.state.rag.retrieve
-    async def capture(base,question,*args):
-        queries.append(question);return await retrieve(base,question,*args)
+    async def capture(base,question,*args,**kwargs):
+        queries.append(question);return await retrieve(base,question,*args,**kwargs)
     app.state.rag.retrieve=capture
-    assert c.patch(f'/api/chats/{cid}/sources',json={'rag_enabled':rag,'web_search_enabled':web,'knowledge_base_id':bid}).status_code==200
     result=c.post(f'/api/chats/{cid}/messages',json={'text':'Кто его жена?','request_id':str(uuid4())})
     assert result.status_code==200,result.text
     assert len(rewrites)==1
     if web:assert p.last_query=='Кто жена Дональда Трампа?'
     if rag:assert queries==['Кто жена Дональда Трампа?']
-    assert result.json()['metadata']['retrieval']['context_query']['contextual']
+    assert stored_answer(c,cid)['metadata']['retrieval']['context_query']['contextual']
     assert app.state.store.messages(cid)[-2]['text']=='Кто его жена?'
 
 
 def test_history_off_passes_input_directly_without_planning(web_setup):
-    c,app,p=web_setup;cid=new_chat(c,web=True)
+    c,app,p=web_setup
+    configure_space(c, history_messages=0)
+    cid=new_chat(c,web=True)
     app.state.store.add_turn(cid,'Who is Trump?','Donald Trump is a politician.',{})
-    assert c.put(f'/api/editor/chats/{cid}/model',json={'history_messages':0}).status_code==200
     result=c.post(f'/api/chats/{cid}/messages',json={'text':'Who is his wife?','request_id':str(uuid4())})
     assert result.status_code==200,result.text
     assert p.searches==p.completions==1
     assert p.last_query=='Who is his wife?'
-    assert not result.json()['metadata']['retrieval']['context_query']['history_aware']
+    assert not stored_answer(c,cid)['metadata']['retrieval']['context_query']['history_aware']
     assert len(app.state.store.messages(cid))==4
 
 
@@ -131,7 +132,8 @@ def test_cancel_during_history_aware_planning_saves_no_partial_turn(tmp_path):
         app=create_app(s,p);store=app.state.store
         store.user('u','demo@localhost','Demo');token=store.session('u',3600)
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url=s.origin,cookies={'gosboard_session':token},headers={'Origin':s.origin,'X-CSRF-Token':store.auth(token)['csrf']}) as c:
-            cid=(await c.post('/api/chats',json={'web_search_enabled':True})).json()['id']
+            await configure_space_async(c, web_search_enabled=True)
+            cid=(await c.post('/api/chats')).json()['id']
             store.add_turn(cid,'Earlier explicit question','Earlier answer',{})
             rid=str(uuid4())
             pending=asyncio.create_task(c.post(f'/api/chats/{cid}/messages',json={'text':'New standalone question','request_id':rid}))

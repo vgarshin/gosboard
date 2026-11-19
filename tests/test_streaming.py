@@ -20,7 +20,9 @@ def events(response):
 
 
 def enable(client, cid, **options):
-    result = client.patch(f'/api/chats/{cid}/sources', json={'streaming_enabled':True, **options})
+    assert not set(options) - {'auto_speech', 'communication_mode'}
+    mode = options.get('communication_mode') or ('voice' if options.get('auto_speech') else 'text')
+    result = client.patch(f'/api/chats/{cid}/mode', json={'communication_mode':mode})
     assert result.status_code == 200, result.text
 
 
@@ -93,16 +95,24 @@ def test_tts_failure_does_not_discard_text(setup):
 
 
 def test_stream_permissions_preferences_and_no_model_privilege(roles):
-    c,app,p,access,login,s=roles;login('user');cid=create_chat(c)
+    c,app,p,access,login,s=roles
+    login('admin')
+    route='/api/management/spaces/initial/policy'
+    policy=c.get(route).json()['policy']
+    policy['classic_text']=True
+    assert c.put(route,json={'revision':1,'policy':policy}).status_code==200
+    login('user')
+    cid=create_chat(c)
     body={'text':'Question','request_id':str(uuid4())}
     assert c.post(f'/api/chats/{cid}/messages/stream',json=body).status_code==409
     enable(c,cid,auto_speech=True)
     assert c.get('/api/chats').json()[0]['settings']['auto_speech'] is True
-    assert c.patch(f'/api/chats/{cid}/sources',json={'rag_enabled':False}).json()['settings']['streaming_enabled'] is True
-    assert c.patch(f'/api/chats/{cid}/sources',json={'model_id':'alice-flash'}).status_code==422
-    login('admin');assert c.post(f'/api/chats/{cid}/messages/stream',json=body).status_code==404
+    assert c.patch(f'/api/chats/{cid}/mode',json={'model_id':'alice-flash'}).status_code==422
+    login('admin')
+    assert c.post(f'/api/chats/{cid}/messages/stream',json=body).status_code==404
     assert c.post('/api/requests/'+body['request_id']+'/audio/stop').json()=={'stopped':False}
-    login('user');assert c.patch(f'/api/chats/{cid}/sources',json={'streaming_enabled':False}).status_code==200
+    login('user')
+    assert c.patch(f'/api/chats/{cid}/mode',json={'communication_mode':'text'}).status_code==200
     assert c.post(f'/api/chats/{cid}/messages',json=body).status_code==200
 
 
@@ -195,7 +205,7 @@ def test_grounded_preview_and_speech_wait_for_validated_sources(web_setup,rag,we
     else:
         assert result[-1]['event']=='done' and p.spoken is not None
         answer=next(e for e in result if e['event']=='answer')
-        assert {s['type'] for s in answer['metadata']['citations']}==({'rag'} if rag else set())|({'web'} if web else set())
+        assert {s['type'] for s in app.state.store.messages(cid)[-1]['metadata']['citations']}==({'rag'} if rag else set())|({'web'} if web else set())
         assert result.index(answer)<next(i for i,e in enumerate(result) if e['event']=='audio')
         assert '[' not in p.spoken
 
@@ -240,7 +250,7 @@ def test_stream_lifecycle_and_budget_reservations(tmp_path,action):
             return {'Origin':s.origin,'X-CSRF-Token':auth['csrf'],'Cookie':'gosboard_session='+token}
         uh,ah=headers('user'),headers('admin')
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url=s.origin,headers=uh) as c:
-            cid=(await c.post('/api/chats',json={'streaming_enabled':True,'auto_speech':True})).json()['id']
+            cid=(await c.post('/api/chats',json={'communication_mode':'voice'})).json()['id']
             rid=str(uuid4());task=asyncio.create_task(c.post(f'/api/chats/{cid}/messages/stream',json={'text':'Question','request_id':rid}))
             await asyncio.wait_for(p.audio_started.wait(),2)
             assert store.messages(cid)==[]
@@ -285,12 +295,12 @@ def test_concurrent_streams_keep_users_history_and_audio_isolated(tmp_path,users
             token=store.session(uid,3600);auth=store.auth(token)
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url=s.origin,
                  headers={'Origin':s.origin,'X-CSRF-Token':auth['csrf'],'Cookie':'gosboard_session='+token}) as c:
-                cid=(await c.post('/api/chats',json={'streaming_enabled':True,'auto_speech':True})).json()['id']
+                cid=(await c.post('/api/chats',json={'communication_mode':'voice'})).json()['id']
                 result=events(await c.post(f'/api/chats/{cid}/messages/stream',json={'text':uid,'request_id':str(uuid4())}))
                 assert result[-1]['event']=='done'
                 saved=(await c.get(f'/api/chats/{cid}/messages')).json()
                 assert [m['text'] for m in saved]==[uid,'Ответ: '+uid]
-                assert result[-1]['metadata']['context']['history_messages_included']==0
+                assert store.messages(cid)[-1]['metadata']['context']['history_messages_included']==0
                 assert (await c.get(next(e['url'] for e in result if e['event']=='audio'))).status_code==200
                 return cid,token
         results=await asyncio.wait_for(asyncio.gather(*(one(i) for i in range(users))),10)

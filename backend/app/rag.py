@@ -94,28 +94,13 @@ class KnowledgeEngine:
         self.index_cache = OrderedDict()
         self.task = None
         self.current_document = None
+        self.authorize_job = None
         self.embed_lock = asyncio.Lock()
         self.last_embedding = 0.0
 
     def require_enabled(self):
         if not self.settings.rag_enabled:
             raise HTTPException(409, 'Базы знаний пока не включены')
-
-    def validate_options(self, options):
-        if not options.rag_enabled:
-            if options.knowledge_base_id and not self.settings.rag_enabled:
-                raise HTTPException(409, 'Базы знаний пока не включены')
-            if options.knowledge_base_id:
-                try:
-                    self.repo.base(options.knowledge_base_id)
-                except HTTPException:
-                    # Users can always turn off RAG after a base has been removed.
-                    options.knowledge_base_id = None
-            return
-        self.require_enabled()
-        self.repo.index_snapshot(options.knowledge_base_id)
-        if not self.repo.chunks(options.knowledge_base_id):
-            raise HTTPException(409, 'В базе нет готовых документов')
 
     async def start(self):
         if self.settings.rag_enabled:
@@ -128,7 +113,7 @@ class KnowledgeEngine:
             with suppress(asyncio.CancelledError):
                 await self.task
 
-    async def upload(self, bid, filename, mime, content, uid):
+    async def upload(self, bid, filename, mime, content, uid, *, actor=None):
         self.require_enabled()
         self.repo.base(bid)
         filename = Path(filename).name.strip()
@@ -162,7 +147,7 @@ class KnowledgeEngine:
             os.fsync(output.fileno())
         key = f'aitalks/documents/{bid}/{did}/{sha}{suffix}'
         try:
-            document = self.repo.add_document(did, bid, filename, sha, key, expected, uid, self.settings.rag_max_documents)
+            document = self.repo.add_document(did, bid, filename, sha, key, expected, uid, self.settings.rag_max_documents, actor)
         except BaseException:
             path.unlink(missing_ok=True)
             raise
@@ -237,6 +222,12 @@ class KnowledgeEngine:
 
     async def index_document(self, document):
         did, bid = document['id'], document['base_id']
+
+        def check_job():
+            if self.authorize_job and document.get('job_actor'):
+                self.authorize_job(document)
+
+        check_job()
         if document['status'] == 'queued_upload':
             self.repo.set_document(did, status='uploading', error='')
             path = self.originals / did
@@ -252,6 +243,7 @@ class KnowledgeEngine:
         self.repo.set_document(did, total=len(chunks))
         prepared = []
         for ordinal, chunk in enumerate(chunks):
+            check_job()
             self.repo.document(did)
             key = self._embedding_key(chunk['text'], parsed['chunk_spec'])
             if not self.repo.embedding(key):
@@ -264,6 +256,7 @@ class KnowledgeEngine:
                              'embedding_key': key, 'filename': document['filename']})
             self.repo.set_document(did, progress=ordinal + 1)
         # Probe/cache the paired query model version to detect model-space drift at retrieval time.
+        check_job()
         probe_key = cache_key('query-profile', document['requested_by'], self.settings.embedding_query_model)
         probe = self.store.get_cache(probe_key, document['requested_by'])
         if probe:
@@ -272,6 +265,7 @@ class KnowledgeEngine:
             query_vector, query_version = await self._embed(document['requested_by'], 'query', 'Проверка поисковой модели')
             self.store.put_cache(probe_key, document['requested_by'], 'rag_query', json.dumps([query_vector, query_version]).encode(), 3600)
         async with self.base_locks.setdefault(bid, asyncio.Lock()):
+            check_job()
             self.repo.document(did)
             combined = self.repo.chunks(bid, exclude_document=did) + prepared
             blob, ids, spec = self._build(combined, query_version, len(query_vector), parsed['chunk_spec'])
@@ -336,13 +330,13 @@ class KnowledgeEngine:
             except TimeoutError:
                 self.clean_cache()
 
-    async def retrieve(self, bid, question, uid, max_chars, request_id=None):
+    async def retrieve(self, bid, question, uid, max_chars, request_id=None, *, space_id=None):
         self.require_enabled()
         base, stored = self.repo.index_snapshot(bid)
         spec = json.loads(stored['spec'])
         if spec['query_model'] != self.settings.embedding_query_model or spec['doc_model'] != self.settings.embedding_doc_model:
             raise HTTPException(409, 'Модель поиска изменена. Переиндексируйте базу знаний')
-        key = cache_key('rag-query-v1', uid, question, spec)
+        key = cache_key('rag-query-v2', space_id, uid, question, spec)
         cached = self.store.get_cache(key, uid, 'rag_query')
         if cached:
             vector, version = json.loads(cached)
@@ -372,7 +366,7 @@ class KnowledgeEngine:
             while len(self.index_cache) > 4:
                 self.index_cache.popitem(last=False)
         if not ids:
-            return [], base['revision']
+            raise HTTPException(409, 'В базе знаний нет готовых документов')
         query = np.asarray([vector], dtype='float32')
         faiss.normalize_L2(query)
         scores, positions = index.search(query, min(len(ids), 100))
@@ -425,7 +419,7 @@ class KnowledgeEngine:
             self.index_cache.clear()
         self.wakeup.set()
 
-    async def tune(self, bid, policy):
+    async def tune(self, bid, policy, *, actor=None):
         async with self.base_locks.setdefault(bid, asyncio.Lock()):
             base = self.repo.base(bid)
             if self.current_document and self.repo.document(self.current_document, True)['base_id']==bid:
@@ -441,20 +435,20 @@ class KnowledgeEngine:
                 db.execute('UPDATE rag_bases SET chunk_size=?,chunk_overlap=?,top_k=?,top_k_documents=?,revision=revision+1 WHERE id=?',
                            (policy.chunk_size,policy.chunk_overlap,policy.top_k,policy.top_k_documents,bid))
                 if changed and documents:
-                    db.execute("UPDATE rag_documents SET status='queued',progress=0,error='' WHERE base_id=? AND deleted=0", (bid,))
+                    db.execute("UPDATE rag_documents SET status='queued',progress=0,error='',job_actor=? WHERE base_id=? AND deleted=0", (actor,bid))
                     db.execute('UPDATE rag_bases SET rebuilding=1 WHERE id=?', (bid,))
                 db.execute("DELETE FROM cache WHERE kind IN ('llm','rag_query')")
             self.index_cache.clear()
         self.wakeup.set()
         return self.repo.base(bid)
 
-    async def reindex(self, bid):
+    async def reindex(self, bid, *, actor=None):
         async with self.base_locks.setdefault(bid, asyncio.Lock()):
             if self.current_document and self.repo.document(self.current_document, True)['base_id'] == bid:
                 raise HTTPException(409, 'Дождитесь завершения текущей обработки')
             if not self.repo.documents(bid):
                 raise HTTPException(409, 'В базе нет документов')
-            self.repo.queue_reindex(bid)
+            self.repo.queue_reindex(bid, actor)
             self.index_cache.clear()
         self.wakeup.set()
 
@@ -474,12 +468,12 @@ class KnowledgeEngine:
             self.index_cache.clear()
         self.wakeup.set()
 
-    async def retry(self, did):
+    async def retry(self, did, *, actor=None):
         document = self.repo.document(did)
         if document['status'] != 'failed':
             raise HTTPException(409, 'Повтор доступен только для документов с ошибкой')
         # If the original is already in S3, reading it is safe; otherwise repeat its immutable upload.
-        self.repo.set_document(did, status='queued_upload' if self.originals.joinpath(did).exists() else 'queued', progress=0, error='')
+        self.repo.set_document(did, status='queued_upload' if self.originals.joinpath(did).exists() else 'queued', progress=0, error='', job_actor=actor)
         self.wakeup.set()
 
     def clean_cache(self):

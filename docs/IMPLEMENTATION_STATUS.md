@@ -2,6 +2,16 @@
 
 Documentation reorganized for the standalone repository: 2026-11-17. Feature verification below records the existing delivery; no application deployment is part of this repository preparation.
 
+## Spaces production release
+
+Spaces and the revised interface were deployed to aitalks.tech on 2026-11-19. The Spaces migration created «Основное пространство» for previously active accounts and materialized existing chat settings. Existing bases remain under administrative management until a manager is assigned. The predeployment archive passed isolated restore checks with both backend versions and was downloaded from private S3 with a matching checksum. At cutover, the database and chat snapshots passed integrity checks. The public HTTPS site served the new frontend, the anonymous Spaces API request returned 401, and the production backup service completed successfully after deployment. OAuth sign-in and physical microphone behavior were not exercised on production in this release.
+
+Before future migration work, use `python3 scripts/report_spaces_migration.py SNAPSHOT` on a consistent backup and rehearse restoration on a disposable copy. The entries below describe historical deliveries before Spaces.
+
+## User-visible citations in production
+
+Active chat owners can open validated RAG and Internet citations from their saved replies. The preview authorizes the reply and current membership before returning the saved excerpt. Deleted or revoked RAG sources are unavailable in the owner preview. Exports and archived conversations use the previous text projection. The November 20 Moscow-time release passed the isolated restore rehearsal, public HTTPS health check, and anonymous citation-preview access check. A signed-in production HTTPS check used disposable accounts and synthetic replies. Both previews opened for the owner. The check covered denial of cross-owner and original-file access, handling of a deleted document, revocation of membership, and the archive and export projections. The fixtures were removed, and the check made no provider calls. Yandex OAuth and a physical microphone rehearsal remain separate checks.
+
 ## Next priority confirmed by the owner
 
 Owner confirms the current live dialog works. Spoken interruption is the next implementation priority; this delivery updates project documentation and the app manual first. It is not implemented yet. Current live dialog still disables the microphone while answering. Use Pause/Stop sound, resolve any retained draft, then Resume to speak a clarification. The upcoming feature must reject loudspeaker echo, cancel stale work safely, preserve first words/history semantics and keep every existing mode. Streaming STT is a later optimization, not a prerequisite. See ../plans/LIVE_DIALOG_PLAN.md section C.

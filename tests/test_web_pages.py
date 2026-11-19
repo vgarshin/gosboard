@@ -1,3 +1,4 @@
+from space_helpers import stored_answer, configure_space_async
 import asyncio
 import json
 import socket
@@ -158,7 +159,7 @@ def test_page_text_reaches_grounded_answer_and_survives_cache_expiry(web_setup,r
     c,app,p=web_setup;pages=FakePages();app.state.web.pages=pages
     bid=ready_base(c)[0] if rag else None;cid=new_chat(c,rag,True,bid)
     result=ask(c,cid);assert result.status_code==200,result.text
-    meta=result.json()['metadata'];web=next(s for s in meta['citations'] if s['type']=='web')
+    meta=stored_answer(c,cid)['metadata'];web=next(s for s in meta['citations'] if s['type']=='web')
     assert web['content_kind']=='page_excerpt' and web['page_status']=='loaded'
     assert 'SEXTANT-1701' in app.state.store.messages(cid)[-1]['text']
     assert meta['retrieval']['web']['page_fetch']['loaded']==2
@@ -179,21 +180,21 @@ def test_failed_page_fetch_is_labelled_snippet_and_internet_off_never_fetches(we
     cid=new_chat(c);assert ask(c,cid).status_code==200 and pages.calls==[]
     cid=new_chat(c,web=True);result=ask(c,cid)
     assert result.status_code==200,result.text
-    meta=result.json()['metadata'];source=meta['citations'][0]
+    meta=stored_answer(c,cid)['metadata'];source=meta['citations'][0]
     assert source['content_kind']=='search_snippet' and source['page_status']=='timeout'
     assert meta['retrieval']['web']['page_fetch']['fallback']==2
 
 
 def test_refreshed_page_invalidates_answer_even_with_cached_search(web_setup):
     c,app,p=web_setup;pages=FakePages();app.state.web.pages=pages
-    first=ask(c,new_chat(c,web=True));assert first.status_code==200
-    source=first.json()['metadata']['citations'][0]
+    first_id=new_chat(c,web=True);first=ask(c,first_id);assert first.status_code==200
+    source=stored_answer(c,first_id)['metadata']['citations'][0]
     second=ask(c,new_chat(c,web=True))
     assert second.json()['metadata']['cached'] and p.completions==1
     pages.timestamp+=1
-    third=ask(c,new_chat(c,web=True))
+    third_id=new_chat(c,web=True);third=ask(c,third_id)
     assert third.status_code==200 and not third.json()['metadata']['cached'] and p.completions==2
-    assert third.json()['metadata']['retrieval']['web']['cached']
+    assert stored_answer(c,third_id)['metadata']['retrieval']['web']['cached']
     assert c.get('/api/web-sources/'+source['source_id']).json()['page_fetched_at']==123
 
 
@@ -213,7 +214,8 @@ def test_cancel_during_page_reads_cancels_all_children(tmp_path):
         app=create_app(settings,p);app.state.web.pages=pages;store=app.state.store
         store.user('u','demo@localhost','Demo');token=store.session('u',3600)
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url=settings.origin,cookies={'gosboard_session':token},headers={'Origin':settings.origin,'X-CSRF-Token':store.auth(token)['csrf']}) as c:
-            cid=(await c.post('/api/chats',json={'web_search_enabled':True})).json()['id'];rid=str(uuid4())
+            await configure_space_async(c, web_search_enabled=True)
+            cid=(await c.post('/api/chats')).json()['id'];rid=str(uuid4())
             pending=asyncio.create_task(c.post(f'/api/chats/{cid}/messages',json={'text':'Education reform','request_id':rid}))
             await asyncio.wait_for(started.wait(),2)
             assert (await c.post(f'/api/requests/{rid}/cancel')).json()['cancel_requested']

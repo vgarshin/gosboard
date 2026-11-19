@@ -1,3 +1,4 @@
+import {Toggle} from './Toggle';
 import React, {useEffect, useState} from 'react';
 export function RagSettings({api}) {
  const [bases,setBases]=useState([]),[selected,setSelected]=useState(''),[policy,setPolicy]=useState(null);
@@ -12,6 +13,6 @@ export function RagSettings({api}) {
  <label>Перекрытие, символов<input type="number" min={0} max={400} aria-label="Перекрытие" value={policy.chunk_overlap} disabled={busy} onChange={e=>setPolicy({...policy,chunk_overlap:Number(e.target.value)})}/></label>
  <label>Top K документов<input type="number" min={1} max={10} aria-label="Top K документов" value={policy.top_k_documents} disabled={busy} onChange={e=>setPolicy({...policy,top_k_documents:Number(e.target.value)})}/></label>
  <label>Максимум фрагментов<input type="number" min={1} max={10} aria-label="Top K" value={policy.top_k} disabled={busy} onChange={e=>setPolicy({...policy,top_k:Number(e.target.value)})}/></label>
- <label className="account-enabled"><input type="checkbox" aria-label="Подтвердить переиндексацию" checked={policy.reindex} disabled={busy} onChange={e=>setPolicy({...policy,reindex:e.target.checked})}/>Подтверждаю переиндексацию и расходы при изменении фрагментов</label><small>Top K ограничивает число файлов, а лимит фрагментов — общий объём выбранных отрывков. Контекст может вместить меньше источников.</small><button className="primary" disabled={busy}>Сохранить настройки RAG</button></>}
+ <label className="account-enabled"><Toggle aria-label="Подтвердить переиндексацию" checked={policy.reindex} disabled={busy} onChange={e=>setPolicy({...policy,reindex:e.target.checked})}/>Подтверждаю переиндексацию и расходы при изменении фрагментов</label><small>Top K ограничивает число файлов, а лимит фрагментов — общий объём выбранных отрывков. Контекст может вместить меньше источников.</small><button className="primary" disabled={busy}>Сохранить настройки RAG</button></>}
  </form></>;
 }

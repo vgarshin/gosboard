@@ -12,7 +12,7 @@ from urllib.parse import urljoin, urlsplit
 import httpcore
 import httpx
 
-from .store import cache_key
+from .store import cache_key, operation_space
 
 MAX_BYTES = 2 * 1024 * 1024
 MAX_TEXT = 40000
@@ -164,7 +164,7 @@ class PageFetcher:
         await self.pool.aclose()
 
     async def fetch(self, url, uid):
-        started=time.monotonic();key=cache_key('web-page-v1',uid,url)
+        started=time.monotonic();key=cache_key('web-page-v2',operation_space.get(),uid,url)
         cached=self.store.get_cache(key,uid,'web_page')
         if cached is not None:return {**json.loads(cached),'cached':True}
         try:
