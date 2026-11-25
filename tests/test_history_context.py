@@ -23,7 +23,7 @@ def test_history_window_limits_and_whole_turn_character_budget():
         with pytest.raises(ValueError):ChatOptions(history_messages=count)
 
 
-def test_only_admin_changes_history_and_existing_profiles_keep_history_limit(roles):
+def test_space_managers_change_history_and_existing_profiles_keep_history_limit(roles):
     from space_helpers import configure_space
     c,app,p,access,login,s=roles
     original=p.complete
@@ -36,16 +36,16 @@ def test_only_admin_changes_history_and_existing_profiles_keep_history_limit(rol
     assert c.put('/api/management/spaces/initial/assignments',json={
         'email':'editor@example.com','assigned':True,'management':True,
     }).status_code==200
-    login('editor')
-    route='/api/management/spaces/initial/policy'
-    policy=c.get(route).json()['policy']
-    policy['settings']['history_messages']=2
-    assert c.put(route,json={'revision':2,'policy':policy}).status_code==403
     login('user')
     cid=c.post('/api/chats').json()['id']
     assert c.patch(f'/api/chats/{cid}/mode',json={'history_messages':2}).status_code==422
     for i in range(4):
         app.state.store.add_turn(cid,f'q{i}',f'a{i}',{})
+    login('editor')
+    route='/api/management/spaces/initial/policy'
+    policy=c.get(route).json()['policy']
+    policy['settings']['history_messages']=2
+    assert c.put(route,json={'revision':2,'policy':policy}).status_code==200
     login('admin')
     configure_space(c,history_messages=0)
     login('user')

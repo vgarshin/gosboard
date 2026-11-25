@@ -6,6 +6,8 @@ from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from typing import Literal
 
+from .store import cache_key
+
 
 class AccountInput(BaseModel):
     model_config = ConfigDict(extra='forbid')
@@ -51,6 +53,22 @@ class Access:
             email = AccountInput(email=email).email
         except ValueError:
             raise HTTPException(502, 'Яндекс не предоставил основной email') from None
+        return self._register_identity(uid, email, name)
+
+    def vtb_edu_identity(self, issuer, subject, email, name):
+        """Register claims that the OIDC callback has already verified."""
+        try:
+            email = AccountInput(email=email).email
+        except ValueError:
+            return False
+        if email.rsplit('@', 1)[1] != 'vtb.education' or not issuer or not subject:
+            return False
+        uid = 'vtb-edu:' + cache_key(issuer, subject)
+        if self._register_identity(uid, email, name, corporate=True):
+            return uid
+        return False
+
+    def _register_identity(self, uid, email, name, *, corporate=False):
         with self.store.connection() as db:
             db.execute('BEGIN IMMEDIATE')
             identity = db.execute('SELECT email FROM users WHERE id=?', (uid,)).fetchone()
@@ -61,7 +79,8 @@ class Access:
             new_account = db.execute("INSERT OR IGNORE INTO access_accounts(email,role,enabled,created,updated) VALUES (?,'user',-1,?,?)",
                                      (email, now, now))
             if new_account.rowcount:
-                self.audit(uid, 'account.request', email, {}, db)
+                details = {'login_method': 'vtb-edu'} if corporate else {}
+                self.audit(uid, 'account.request', email, details, db)
             if db.execute('SELECT enabled FROM access_accounts WHERE email=?', (email,)).fetchone()[0] == 0:
                 return False
             db.execute("""
@@ -87,7 +106,10 @@ class Access:
         with self.store.connection() as db:
             return [dict(row) for row in db.execute('''SELECT a.email,a.role,a.import_name AS name,(a.enabled=1) AS enabled,a.updated,
                 CASE a.enabled WHEN -1 THEN 'pending' WHEN 1 THEN 'active' ELSE 'disabled' END AS status,
-                (SELECT count(*) FROM users u WHERE lower(u.email)=a.email) AS signed_in
+                (SELECT count(*) FROM users u WHERE lower(u.email)=a.email) AS signed_in,
+                (SELECT CASE WHEN u.id LIKE 'vtb-edu:%' THEN 'vtb-edu'
+                             WHEN u.id LIKE 'yandex:%' THEN 'yandex' END
+                 FROM users u WHERE lower(u.email)=a.email ORDER BY u.id LIMIT 1) AS login_method
                 FROM access_accounts a ORDER BY a.email''')]
 
     def save(self, body, actor, create_only=False):
@@ -106,6 +128,7 @@ class Access:
             if previous and (previous['role']!=body.role or previous['enabled']!=int(body.enabled)):
                 if body.role != 'editor' or not body.enabled:
                     db.execute('UPDATE space_editors SET active=0,revision=revision+1 WHERE email=? AND active=1', (body.email,))
+                    db.execute('DELETE FROM rag_managers WHERE email=?', (body.email,))
                 if previous['enabled'] != -1 or not body.enabled:
                     db.execute('DELETE FROM sessions WHERE user_id IN (SELECT id FROM users WHERE lower(email)=?)', (body.email,))
             self.audit(actor, 'account.save', body.email, body.model_dump(), db)
@@ -116,7 +139,7 @@ class Access:
             rows = db.execute('''SELECT c.id,c.title,c.user_id,u.email,c.updated,c.space_id,coalesce(s.settings,'{}') AS settings
                 FROM chats c JOIN users u ON u.id=c.user_id LEFT JOIN chat_settings s ON s.chat_id=c.id
                 WHERE ?='admin' OR EXISTS (
-                    SELECT 1 FROM space_editors e WHERE e.space_id=c.space_id AND e.email=? AND e.active=1
+                    SELECT 1 FROM space_managers e WHERE e.space_id=c.space_id AND e.email=?
                 ) ORDER BY c.updated DESC LIMIT 500''', (current['role'], current['email'])).fetchall()
         return [{**dict(row), 'settings': self.store.chat_options(row['settings'])} for row in rows]
 

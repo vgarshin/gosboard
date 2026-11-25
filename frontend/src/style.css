@@ -137,3 +137,14 @@
 .configuration-version button { padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; }
 .chat-citation { padding: 0 2px; color: var(--green); text-decoration: underline; text-underline-offset: .15em; }
 .chat-citation:disabled { text-decoration: none; }
+
+.kb-managers { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
+.kb-managers summary { cursor: pointer; font-size: 13px; }
+.kb-managers ul { list-style: none; padding: 0; margin: 8px 0 0; max-height: 240px; overflow: auto; }
+.management-form .kb-managers label { flex-direction: row; align-items: center; gap: 10px; padding: 8px 0; overflow-wrap: anywhere; }
+
+.login-card .login-provider {
+  width: min(100%, 254px);
+  min-height: 44px;
+}
+.login-card .login-provider + .login-provider { margin-top: 0.65rem; }

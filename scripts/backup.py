@@ -15,7 +15,7 @@ def snapshot(source, target):
     try:
         with sqlite3.connect(source.as_uri() + '?mode=ro', uri=True) as src, sqlite3.connect(target) as dst:
             src.backup(dst)
-            for table in ('cache', 'sessions', 'oauth', 'requests'):
+            for table in ('cache', 'sessions', 'oauth', 'vtb_edu_oauth', 'requests'):
                 dst.execute(f'DELETE FROM {table}')
             dst.commit()
             dst.execute('VACUUM')

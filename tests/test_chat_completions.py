@@ -7,7 +7,7 @@ from app.providers import Providers, LLM_URL, LLM_PROTOCOL
 from test_app import CONFIG,live_settings
 
 
-@pytest.mark.parametrize('model',['yandexgpt/latest','yandexgpt-lite/latest','aliceai-llm','aliceai-llm-flash'])
+@pytest.mark.parametrize('model',['yandexgpt/latest','yandexgpt-lite/latest','aliceai-llm','aliceai-llm-flash','deepseek-v4.1-flash'])
 def test_shared_chat_adapter(tmp_path,model):
     async def scenario():
         p=Providers(live_settings(tmp_path));await p.client.aclose()
@@ -80,4 +80,60 @@ def test_json_mode_only_for_grounded_answers_with_plain_history(tmp_path,grounde
             text,meta=await p.complete(messages,AppConfig.model_validate_json(CONFIG.read_text()))
             assert meta['provider_response_format']==('json_object' if grounded else 'text')
         finally:await p.close()
+    asyncio.run(scenario())
+
+
+def test_cloudru_gigachat_routing_and_structured_stream(tmp_path):
+    import json
+
+    from app.providers import CLOUDRU_PROTOCOL, CLOUDRU_URL
+    from app.rag import grounding_instruction, validate_rag_answer
+
+    async def scenario():
+        settings = live_settings(tmp_path)
+        settings.cloudru_api_key = 'fake-cloudru'
+        provider = Providers(settings)
+        await provider.client.aclose()
+        sources = [{'id': 'D1', 'type': 'rag'}]
+        raw = '{"supported":true,"answer":"Fact [D1]","used_sources":["D1"]}'
+        calls = []
+
+        def handler(request):
+            url = str(request.url)
+            calls.append(url)
+            assert url == CLOUDRU_URL
+            assert request.headers['authorization'] == 'Bearer fake-cloudru'
+            assert 'OpenAI-Project' not in request.headers
+            body = json.loads(request.content)
+            assert body['model'] == 'ai-sage/GigaChat3-10B-A1.8B' and body['max_tokens'] == 1200
+            assert 'max_completion_tokens' not in body and 'store' not in body
+            if not body['stream']:
+                assert 'response_format' not in body
+                return httpx.Response(200, json={'choices': [{'finish_reason': 'stop', 'message': {'content': 'Hello'}}]})
+            assert body['response_format'] == {'type': 'json_object'}
+            parts = [{'choices': [{'delta': {'content': raw}}]},
+                     {'choices': [{'delta': {'content': ''}, 'finish_reason': 'stop'}]}]
+            return httpx.Response(200, text=''.join(f'data: {json.dumps(part)}\n\n' for part in parts) + 'data: [DONE]\n\n')
+
+        provider.client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        config = AppConfig.model_validate_json(CONFIG.read_text())
+        config = config.model_copy(update={'model': 'cloudru/ai-sage/GigaChat3-10B-A1.8B'})
+        messages = [{'role': 'system', 'text': 'Ordinary chat'}, {'role': 'user', 'text': 'Question'}]
+        deltas = []
+
+        async def on_delta(part):
+            deltas.append(part)
+
+        try:
+            answer, meta = await provider.complete(messages, config)
+            assert answer == 'Hello' and meta['provider_api'] == CLOUDRU_PROTOCOL
+            messages[0]['text'] = grounding_instruction(sources)
+            answer, meta = await provider.complete_stream(messages, config, on_delta)
+            assert answer == ''.join(deltas)
+            assert validate_rag_answer(answer, sources) == ('Fact [D1]', sources, True)
+            assert meta['provider_api'] == CLOUDRU_PROTOCOL and meta['provider_response_format'] == 'json_object'
+            assert calls == [CLOUDRU_URL, CLOUDRU_URL]
+        finally:
+            await provider.close()
+
     asyncio.run(scenario())

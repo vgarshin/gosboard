@@ -32,7 +32,7 @@ def verify(snapshot, config):
         accounts = db.execute('SELECT email,role,enabled FROM access_accounts ORDER BY email').fetchall() if has_accounts else []
         existing = db.execute('''SELECT c.id,c.user_id FROM chats c JOIN users u ON u.id=c.user_id
             JOIN access_accounts a ON a.email=lower(u.email) WHERE a.enabled=1 LIMIT 1''').fetchone() if has_accounts else db.execute('SELECT id,user_id FROM chats LIMIT 1').fetchone()
-        space_tables = ('spaces','space_memberships','space_editors','space_policies','chat_profiles','rag_owners','rag_managers','rag_revocations','blocked_models','account_imports')
+        space_tables = ('spaces','space_memberships','space_editors','space_owners','space_policies','chat_profiles','rag_owners','rag_managers','rag_revocations','blocked_models','account_imports')
         original_spaces = {
             table: db.execute(f'SELECT * FROM {table} ORDER BY rowid').fetchall()
             for table in space_tables

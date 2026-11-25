@@ -1,5 +1,5 @@
 {
-  "version": "stage2a-v1",
+  "version": "stage2a-v3",
   "model": "yandexgpt/latest",
   "model_label": "YandexGPT",
   "temperature": 0.5,
@@ -11,6 +11,27 @@
   "system_prompt": "Ты — собеседник на русском языке. Отвечай ясно и по существу. Утверждай, что используешь материалы документов, только когда они переданы в контексте с источниками. Не утверждай, что использовал поиск в интернете.",
   "demo_prompt": "Привет. Представь, что ты живешь в начале восемнадцатого века, во времена правления Петра Первого. Выскажи свое мнение об образовательной реформе Петра Первого от лиц дворянина, боярина, крестьянина и иностранца, живущих в то время, используя исторически правдоподобные аргументы.\n\nПродолжительность ответа около полутора минут. В конце дай сводный ответ от каждой из ролей.",
   "models": [
+    {
+      "id": "deepseek-v4-1-flash",
+      "label": "DeepSeek V4.1 Flash (Yandex)",
+      "model": "deepseek-v4.1-flash",
+      "reasoning_supported": false,
+      "reasoning_efforts": []
+    },
+    {
+      "id": "gigachat-3",
+      "label": "GigaChat 3 (Cloud.ru)",
+      "model": "cloudru/ai-sage/GigaChat3-10B-A1.8B",
+      "reasoning_supported": false,
+      "reasoning_efforts": []
+    },
+    {
+      "id": "gigachat-3-pro",
+      "label": "GigaChat 3 Pro (Cloud.ru)",
+      "model": "cloudru/GigaChat/GigaChat-3-Pro",
+      "reasoning_supported": false,
+      "reasoning_efforts": []
+    },
     {
       "id": "alice-flash",
       "label": "Alice AI LLM Flash",

@@ -9,6 +9,9 @@ import time
 from urllib.parse import urlencode, urlparse
 from uuid import UUID
 
+import httpx
+from jwt import PyJWTError
+
 from fastapi import Depends, FastAPI, HTTPException, Request, Query
 from fastapi.responses import JSONResponse, RedirectResponse, Response, FileResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -18,15 +21,16 @@ from .access import Access, AccountInput
 from .account_import import MAX_CSV_BYTES, preview_accounts, apply_accounts
 from .spaces import Spaces, SpaceInput, ArchiveInput, SpaceAssignment, ModeInput, PolicyUpdate, SpacePolicy
 from .configuration import AppConfig, ChatOptions
-from .providers import Providers, split_text, LLM_PROTOCOL
+from .providers import Providers, split_text, completion_protocol
 from .web_search import WebSearch, WEB_UNSUPPORTED, safe_web_url
-from .rag import KnowledgeEngine, MAX_UPLOAD, RAG_CONTRACT, UNSUPPORTED, validate_rag_answer, grounding_instruction
+from .rag import KnowledgeEngine, MAX_UPLOAD, RAG_CONTRACT, RAG_INSTRUCTION_MAX, RAG_MARKER, UNSUPPORTED, validate_rag_answer, grounding_instruction
 from .chat_export import export_chat
 from .reply_stream import ReplyStream, provisional_answer
 from .retrieval_query import RetrievalQuery
 from .metrics import Metrics
 from .settings import Settings
 from .store import Store, cache_key, digest, operation_space
+from . import vtb_edu
 
 logger = logging.getLogger('gosboard')
 COOKIE = 'gosboard_session'
@@ -172,10 +176,22 @@ def context_messages(history, text, config, history_messages=20):
     return [{'role': 'system', 'text': config.system_prompt}, *turns, {'role': 'user', 'text': text}]
 
 
+class RagInstructionUpdate(BaseModel):
+    model_config = ConfigDict(extra='forbid', str_strip_whitespace=True)
+    instruction: str = Field(min_length=1, max_length=RAG_INSTRUCTION_MAX)
+    expected_revision: int = Field(ge=0, strict=True)
+
+
 def create_app(settings=None, providers=None):
     settings = settings or Settings()
     settings.validate()
+    if settings.vtb_edu_ready:
+        vtb_edu.identity_hub_url(settings.vtb_edu_discovery_url, 'OpenID Configuration')
+        vtb_edu.identity_hub_url(settings.vtb_edu_issuer, 'issuer')
     store = Store(settings.data_dir)
+    if not settings.vtb_edu_ready:
+        with store.connection() as db:
+            db.execute("DELETE FROM sessions WHERE user_id LIKE 'vtb-edu:%'")
     metrics = Metrics()
     store.metrics = metrics
     access = Access(store, settings)
@@ -317,7 +333,7 @@ def create_app(settings=None, providers=None):
 
     def session_user(request: Request):
         result = store.auth(request.cookies.get(COOKIE))
-        if not result:
+        if not result or (result['id'].startswith('vtb-edu:') and not settings.vtb_edu_ready):
             raise HTTPException(401, 'Войдите в приложение')
         account = access.account(result['email'])
         if not account or account['enabled'] == 0:
@@ -388,7 +404,9 @@ def create_app(settings=None, providers=None):
 
     @app.get('/api/bootstrap')
     def bootstrap():
-        return {'demo': settings.demo, 'login_url': '/api/auth/yandex', 'demo_login_url': '/api/auth/demo' if settings.demo else None}
+        return {'demo': settings.demo, 'login_url': '/api/auth/yandex',
+                'demo_login_url': '/api/auth/demo' if settings.demo else None,
+                'vtb_edu_login_url': vtb_edu.START if settings.vtb_edu_ready else None}
 
     @app.post('/api/auth/demo')
     def demo_login(request: Request):
@@ -442,6 +460,52 @@ def create_app(settings=None, providers=None):
         response.delete_cookie('gosboard_oauth', path='/api/auth')
         return response
 
+    async def vtb_discovery():
+        return await vtb_edu.discover(provider.client, settings.vtb_edu_discovery_url, settings.vtb_edu_issuer)
+
+    @app.get(vtb_edu.START)
+    async def vtb_start():
+        if not settings.vtb_edu_ready:
+            raise HTTPException(404)
+        try:
+            discovery = await vtb_discovery()
+        except ValueError:
+            access.audit('anonymous', 'auth.vtb-edu', '', {'result': 'discovery_failed'})
+            return RedirectResponse('/?auth_error=vtb-edu', status_code=303)
+        browser, attempt = vtb_edu.begin_attempt(store)
+        location = vtb_edu.authorization_url(discovery, settings.vtb_edu_client_id,
+                                             settings.origin + vtb_edu.CALLBACK, attempt)
+        response = RedirectResponse(location, status_code=303)
+        response.set_cookie(vtb_edu.ATTEMPT_COOKIE, browser, max_age=600, httponly=True,
+                            secure=True, samesite='lax', path=vtb_edu.CALLBACK)
+        return response
+
+    @app.get(vtb_edu.CALLBACK)
+    async def vtb_callback(request: Request, code: str = '', state: str = ''):
+        if not settings.vtb_edu_ready:
+            raise HTTPException(404)
+        uid, outcome = None, 'invalid_attempt'
+        attempt = vtb_edu.consume_attempt(store, request.cookies.get(vtb_edu.ATTEMPT_COOKIE), state)
+        if attempt and code and len(code) <= 4096:
+            try:
+                discovery = await vtb_discovery()
+                subject, email, name = await vtb_edu.exchange_identity(
+                    provider.client, discovery, settings, code, attempt)
+                uid = access.vtb_edu_identity(discovery.issuer, subject, email, name)
+                outcome = 'authenticated' if uid else 'denied'
+            except vtb_edu.IdentityError as error:
+                outcome = str(error)
+            except PyJWTError as error:
+                outcome = type(error).__name__
+            except (ValueError, TypeError, httpx.HTTPError):
+                outcome = 'identity_not_verified'
+        access.audit(uid or 'anonymous', 'auth.vtb-edu', '', {'result': outcome})
+        response = (login_response(uid, request.cookies.get(COOKIE)) if uid
+                    else RedirectResponse('/?auth_error=vtb-edu', status_code=303))
+        response.delete_cookie(vtb_edu.ATTEMPT_COOKIE, path=vtb_edu.CALLBACK,
+                               httponly=True, secure=True, samesite='lax')
+        return response
+
     @app.get('/api/me')
     def me(current=Depends(session_user)):
         return {**{key: value for key, value in current.items() if key != 'requested_space'}, 'admin': current['role']=='admin', 'editor': current['role'] in {'editor','admin'}, 'demo': settings.demo}
@@ -462,7 +526,7 @@ def create_app(settings=None, providers=None):
         return spaces.managed(current)
 
     @app.post('/api/management/spaces', status_code=201)
-    def create_space(body: SpaceInput, current=Depends(admin)):
+    def create_space(body: SpaceInput, current=Depends(editor)):
         policy = SpacePolicy(prompt=live_config.current().system_prompt)
         return spaces.create(body, current, policy.model_dump(mode='json'))
 
@@ -472,7 +536,7 @@ def create_app(settings=None, providers=None):
         return {'ok': True}
 
     @app.post('/api/management/spaces/{sid}/archive')
-    async def archive_space(sid: str, body: ArchiveInput, current=Depends(admin)):
+    async def archive_space(sid: str, body: ArchiveInput, current=Depends(editor)):
         spaces.archive(sid, body, current)
         cancel_space_tasks(sid)
         return {'ok': True}
@@ -515,9 +579,6 @@ def create_app(settings=None, providers=None):
     async def change_space_policy(sid: str, body: PolicyUpdate, current=Depends(editor)):
         spaces.require_manager(sid, current)
         policy = body.policy
-        previous = spaces.policy(sid)
-        if current['role'] != 'admin' and policy.settings.history_messages != previous['settings']['history_messages']:
-            raise HTTPException(403, 'Размер истории настраивает администратор')
         if not policy.prompt or not policy.prompt.strip():
             raise HTTPException(422, 'Введите основную инструкцию пространства')
         if policy.settings.prompt_id != 'default' or policy.settings.rag_enabled or policy.settings.knowledge_base_id:
@@ -565,6 +626,32 @@ def create_app(settings=None, providers=None):
                 db.execute('DELETE FROM blocked_models WHERE model=?', (model,))
             access.audit(current['id'], 'model.access', model, body.model_dump(), db)
         return {'ok': True}
+
+    def read_rag_instruction(db):
+        row = db.execute('SELECT instruction,revision FROM rag_instruction WHERE id=1').fetchone()
+        return dict(row) if row else {'instruction': RAG_CONTRACT, 'revision': 0}
+
+    @app.get('/api/admin/rag/instruction')
+    def rag_instruction(current=Depends(admin)):
+        with store.connection() as db:
+            return read_rag_instruction(db)
+
+    @app.put('/api/admin/rag/instruction')
+    def update_rag_instruction(body: RagInstructionUpdate, current=Depends(admin)):
+        with store.connection() as db:
+            db.execute('BEGIN IMMEDIATE')
+            before = read_rag_instruction(db)
+            if before['revision'] != body.expected_revision:
+                raise HTTPException(409, 'Инструкция уже изменена. Загрузите актуальную версию')
+            if before['instruction'] == body.instruction:
+                return before
+            revision = before['revision'] + 1
+            db.execute("""
+                INSERT INTO rag_instruction (id, revision, instruction) VALUES (1,?,?)
+                ON CONFLICT(id) DO UPDATE SET revision=excluded.revision, instruction=excluded.instruction
+            """, (revision, body.instruction))
+            access.audit(current['id'], 'rag.instruction.save', str(revision), {}, db)
+            return {'instruction': body.instruction, 'revision': revision}
 
     @app.get('/api/admin/config')
     def admin_config(current=Depends(admin)):
@@ -925,6 +1012,8 @@ def create_app(settings=None, providers=None):
         return [base for base in rag.repo.bases() if current['role']=='admin' or base['id'] in visible]
 
     def require_base_manager(bid, current):
+        with store.connection() as db:
+            spaces.require_role(current, db)
         if current['role'] != 'admin' and bid not in managed_base_ids(current):
             raise HTTPException(404, 'База знаний недоступна')
 
@@ -962,6 +1051,23 @@ def create_app(settings=None, providers=None):
                 break
         return sources, revisions
 
+    @app.get('/api/knowledge-bases/{bid}/managers')
+    def base_manager_options(bid: UUID, current=Depends(admin)):
+        rag.require_enabled()
+        bid = str(bid)
+        rag.repo.base(bid)
+        with store.connection() as db:
+            rows = db.execute('''
+                SELECT a.email, m.email IS NOT NULL AS assigned, o.email IS NOT NULL AS owner
+                FROM access_accounts a
+                LEFT JOIN rag_managers m ON m.email=a.email AND m.base_id=?
+                LEFT JOIN rag_owners o ON o.email=a.email AND o.base_id=?
+                WHERE a.role='editor' AND a.enabled=1
+                ORDER BY a.email
+            ''', (bid, bid)).fetchall()
+        return [{'email': row['email'], 'assigned': bool(row['assigned']), 'owner': bool(row['owner'])}
+                for row in rows]
+
     @app.put('/api/knowledge-bases/{bid}/managers')
     def designate_base_manager(bid: UUID, body: SpaceAssignment, current=Depends(admin)):
         bid = str(bid)
@@ -978,8 +1084,10 @@ def create_app(settings=None, providers=None):
         return {'ok': True}
 
     @app.post('/api/knowledge-bases/{bid}/revoke')
-    async def revoke_base(bid: UUID, current=Depends(admin)):
+    async def revoke_base(bid: UUID, current=Depends(editor)):
+        rag.require_enabled()
         bid = str(bid)
+        require_base_manager(bid, current)
         rag.repo.base(bid)
         with store.connection() as db:
             db.execute('INSERT OR IGNORE INTO rag_revocations VALUES (?,?)', (bid, time.time()))
@@ -997,9 +1105,6 @@ def create_app(settings=None, providers=None):
     @app.post('/api/knowledge-bases')
     def create_base(body: BaseInput, current=Depends(editor)):
         rag.require_enabled()
-        if current['role'] == 'editor' and not spaces.managed(current):
-            raise HTTPException(403, 'Сначала получите право управления пространством')
-
         def register(db, bid):
             spaces.require_role(current, db)
             db.execute('INSERT INTO rag_owners VALUES (?,?)', (bid, current['email']))
@@ -1008,9 +1113,14 @@ def create_app(settings=None, providers=None):
         return rag.repo.create_base(body.name, register)
 
     @app.put('/api/knowledge-bases/{bid}/policy')
-    async def tune_base(bid: UUID, body: RagPolicy, current=Depends(admin)):
+    async def tune_base(bid: UUID, body: RagPolicy, current=Depends(editor)):
         rag.require_enabled()
-        result = await rag.tune(str(bid), body, actor=current['id'])
+
+        def authorize():
+            require_base_manager(str(bid), current)
+
+        authorize()
+        result = await rag.tune(str(bid), body, actor=current['id'], authorize=authorize)
         access.audit(current['id'], 'rag.policy', str(bid), body.model_dump())
         return result
 
@@ -1039,15 +1149,27 @@ def create_app(settings=None, providers=None):
             body.clear()
 
     @app.delete('/api/knowledge-bases/{bid}')
-    async def delete_base(bid: UUID, current=Depends(admin)):
+    async def delete_base(bid: UUID, current=Depends(editor)):
         rag.require_enabled()
-        await rag.remove_base(str(bid))
+
+        def authorize():
+            require_base_manager(str(bid), current)
+
+        authorize()
+        await rag.remove_base(str(bid), authorize=authorize)
+        access.audit(current['id'], 'rag.base.delete', str(bid), {})
         return {'ok': True}
 
     @app.post('/api/knowledge-bases/{bid}/reindex')
-    async def reindex_base(bid: UUID, current=Depends(admin)):
+    async def reindex_base(bid: UUID, current=Depends(editor)):
         rag.require_enabled()
-        await rag.reindex(str(bid), actor=current['id'])
+
+        def authorize():
+            require_base_manager(str(bid), current)
+
+        authorize()
+        await rag.reindex(str(bid), actor=current['id'], authorize=authorize)
+        access.audit(current['id'], 'rag.reindex', str(bid), {})
         return {'queued': True}
 
     @app.delete('/api/documents/{did}')
@@ -1115,26 +1237,31 @@ def create_app(settings=None, providers=None):
                 options = ChatOptions.model_validate(chat['settings'])
                 profile, effective = effective_profile(chat)
                 base_ids = profile['base_ids']
-                if base_ids:
-                    ensure_bases_available(base_ids)
-                    retrieval_tasks[asyncio.current_task()] = base_ids
-                web.validate_options(options)
-                grounded = bool(base_ids) or options.web_search_enabled
+                sources_enabled = bool(base_ids) or options.web_search_enabled
                 if stream:
                     stream.speech_config = effective
                     stream.auto_speech = options.auto_speech
                     await stream.emit('status', {'text': 'Формирую ответ'})
                 sources, base_revision, web_info = [], None, None
                 history = store.messages(cid, options.history_messages)
-                retrieval_query,query_info=body.text,{'contextual':False}
+                decision, query_info = {'route': 'direct'}, {'contextual': False}
+                if sources_enabled:
+                    async with slot(llm_slots):
+                        decision, query_info = await query_resolver.resolve(
+                            uid, cid, body.text, history, effective, rid, settings.llm_reserve,
+                            rag=bool(base_ids), web=options.web_search_enabled,
+                        )
+                grounded = decision['route'] == 'search'
+                clarification = decision.get('question')
                 if grounded:
-                    candidate_history=context_messages(history,body.text,effective,options.history_messages)[1:-1]
-                    if candidate_history:
-                        async with slot(llm_slots):
-                            retrieval_query,query_info=await query_resolver.resolve(uid,cid,body.text,candidate_history,effective,rid,settings.llm_reserve)
-                    else:
-                        retrieval_query,query_info=await query_resolver.resolve(uid,cid,body.text,[],effective,rid,settings.llm_reserve)
-                    max_source_chars = min(5500,effective.context_chars-len(effective.system_prompt)-len(RAG_CONTRACT)-len(body.text)-1000)
+                    if base_ids:
+                        ensure_bases_available(base_ids)
+                        retrieval_tasks[asyncio.current_task()] = base_ids
+                    web.validate_options(options)
+                    retrieval_query = decision['query']
+                    with store.connection() as db:
+                        instruction = read_rag_instruction(db)['instruction']
+                    max_source_chars = min(5500,effective.context_chars-len(effective.system_prompt)-len(RAG_MARKER)-len(instruction)-len(body.text)-1000)
                     if max_source_chars<1200:
                         raise HTTPException(422,'Недостаточно места для источников. Сократите запрос или инструкцию')
                     rag_budget = max_source_chars//2 if options.web_search_enabled else max_source_chars
@@ -1148,7 +1275,7 @@ def create_app(settings=None, providers=None):
                     if sources:
                         while sources:
                             source_data=[{**{key:source[key] for key in ('id','title','excerpt','type')},'content_kind':source.get('content_kind','document_chunk')} for source in sources]
-                            system=effective.system_prompt+'\n'+grounding_instruction(sources)+('\nRESOLVED_QUESTION='+json.dumps(retrieval_query,ensure_ascii=False) if query_info['contextual'] else '')+'\nSOURCE_DATA='+json.dumps(source_data,ensure_ascii=False)
+                            system=effective.system_prompt+'\n'+grounding_instruction(sources, instruction)+('\nRESOLVED_QUESTION='+json.dumps(retrieval_query,ensure_ascii=False) if query_info['rewritten'] else '')+'\nSOURCE_DATA='+json.dumps(source_data,ensure_ascii=False)
                             if len(system)+len(body.text)<=effective.context_chars:
                                 break
                             sources.pop()
@@ -1157,20 +1284,29 @@ def create_app(settings=None, providers=None):
                         effective=effective.model_copy(update={'system_prompt':system})
                 snapshot = effective.snapshot()
                 config_hash = store.save_configuration(snapshot)
-                if grounded:
+                if sources_enabled:
                     # Source IDs are numbered afresh each turn. Historical markers must not be mistaken for fresh evidence.
                     history = [{**message, 'text': re.sub(r'\[(?:[DW]\d+)(?:\s*,\s*[DW]\d+)*\]', '', message['text']) if message['role']=='assistant' else message['text']} for message in history]
                 messages = context_messages(history, body.text, effective, options.history_messages)
-                key = cache_key('llm-v5', LLM_PROTOCOL, chat['space_id'], uid, settings.demo, snapshot, options.model_dump(exclude={'streaming_enabled','auto_speech','communication_mode','review_before_send','live_pause'}), base_revision, [source['source_id'] for source in sources if source['type']=='web'], messages)
-                cached = None if body.regenerate else store.get_cache(key, uid, 'llm')
+                key = cache_key(
+                    'llm-v5', completion_protocol(effective.model), chat['space_id'], uid, settings.demo,
+                    snapshot, options.model_dump(exclude={'streaming_enabled','auto_speech','communication_mode','review_before_send','live_pause'}),
+                    base_revision, [source['source_id'] for source in sources if source['type']=='web'], messages,
+                    *(['direct-route-v1'] if sources_enabled and not grounded else []),
+                )
+                cached = None if body.regenerate or clarification else store.get_cache(key, uid, 'llm')
+                preview = ''
                 async with slot(llm_slots):
                     if cached:
                         data = json.loads(cached)
                         answer, meta = data['text'], data['metadata']
+                    elif clarification:
+                        answer = clarification
+                        meta = {'citations': [], 'grounding': 'clarification', 'model_called': False}
                     elif grounded and not sources:
                         answer, meta = WEB_UNSUPPORTED if options.web_search_enabled else UNSUPPORTED, {'citations': [], 'grounding': 'no_evidence', 'model_called': False}
                     else:
-                        raw, preview = '', ''
+                        raw = ''
                         async def delta(part):
                             nonlocal raw, preview
                             raw += part
@@ -1193,8 +1329,10 @@ def create_app(settings=None, providers=None):
                             answer,citations,supported = validate_rag_answer(answer,sources,WEB_UNSUPPORTED if options.web_search_enabled else UNSUPPORTED)
                             rag.verify_sources_live([source for source in citations if source['type']=='rag'])
                             meta.update(citations=citations, grounding='supported' if supported else 'insufficient_evidence', base_version=base_revision)
+                        elif sources_enabled:
+                            meta.update(citations=[], grounding='not_requested')
                         store.put_cache(key, uid, 'llm', json.dumps({'text': answer, 'metadata': meta}).encode(), 86400)
-                if base_ids:
+                if grounded and base_ids:
                     ensure_bases_available(base_ids, base_revision)
                     rag.verify_sources_live([source for source in meta.get('citations',[]) if source['type']=='rag'])
                 metadata = {**meta, 'config_version': effective.version, 'config_hash': config_hash,
@@ -1204,7 +1342,7 @@ def create_app(settings=None, providers=None):
                             'delivery': {'streaming': stream is not None, 'auto_speech': bool(stream and options.auto_speech)},
                            'context': {'history_messages_limit':options.history_messages,'history_messages_included':len(messages)-2 if meta.get('model_called',True) else 0,'input_chars':sum(len(m['text']) for m in messages) if meta.get('model_called',True) else 0,'character_limit':effective.context_chars},
                             'prompt_label': options.prompt_id, 'space_policy_revision': profile.get('policy_revision'),
-                            'retrieval': {'context_query':query_info,'rag_enabled':bool(base_ids),'web_search_enabled':options.web_search_enabled,'rag_sources':sum(source['type']=='rag' for source in sources),'web':web_info},
+                            'retrieval': {'context_query':query_info,'rag_enabled':bool(grounded and base_ids),'web_search_enabled':bool(grounded and options.web_search_enabled),'rag_sources':sum(source['type']=='rag' for source in sources),'web':web_info},
                             'cached': bool(cached), 'elapsed_ms': round((time.monotonic() - started) * 1000)}
                 work_chat(cid, current)
                 aid = store.add_turn(cid, body.text, answer, metadata)

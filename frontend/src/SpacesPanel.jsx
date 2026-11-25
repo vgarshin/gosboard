@@ -4,7 +4,6 @@ import {TriangleAlert, X} from 'lucide-react';
 import {PanelTabs} from './PanelTabs';
 import {useDialog} from './useDialog';
 
-const roleLabels = {user:'Пользователь', editor:'Редактор', admin:'Администратор'};
 const modes = {text:'Текстовый', voice:'Голосовой', live:'Живой диалог'};
 
 export function SpacesPanel({api, admin, onClose}) {
@@ -18,12 +17,10 @@ export function SpacesPanel({api, admin, onClose}) {
   </div>;
 }
 
-export function SpaceManagement({api, admin = false}) {
+function SpaceManagement({api, admin = false}) {
   const [tab, setTab] = useState('existing');
-  const [spaces, setSpaces] = useState([]);
-  const [accounts, setAccounts] = useState([]);
+  const [spaces, setSpaces] = useState(null);
   const [sid, setSid] = useState('');
-  const [email, setEmail] = useState('');
   const [policy, setPolicy] = useState(null);
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
@@ -32,15 +29,10 @@ export function SpaceManagement({api, admin = false}) {
   const [spaceDescription, setSpaceDescription] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
-  const space = spaces.find(item => item.id === sid);
-  const account = accounts.find(item => item.email === email);
+  const space = spaces?.find(item => item.id === sid);
 
   async function load() {
-    const [items, users] = await Promise.all([
-      api('/management/spaces'), api('/management/space-accounts'),
-    ]);
-    setSpaces(items);
-    setAccounts(users);
+    setSpaces(await api('/management/spaces'));
   }
 
   useEffect(() => { load().catch(e => setError(e.message)); }, []);
@@ -63,12 +55,6 @@ export function SpaceManagement({api, admin = false}) {
     finally {setBusy(false);}
   }
 
-  function assign(assigned, management) {
-    run(() => api(`/management/spaces/${sid}/assignments`, {
-      method:'PUT', body:JSON.stringify({email, assigned, management}),
-    }));
-  }
-
   function field(key, value) {
     setPolicy(previous => ({...previous, policy:{...previous.policy, [key]:value}}));
   }
@@ -84,7 +70,7 @@ export function SpaceManagement({api, admin = false}) {
   const selectedPrompt = prompts.find(item => item.id === policy.policy.prompt_id);
   const model = policy?.models.find(item => item.id === settings?.model_id);
 
-  return <PanelTabs label="Пространства" tabs={admin ? [['existing','Существующие пространства'],['new','Новое пространство']] : [['existing','Назначенные пространства']]} active={tab} onChange={setTab}>
+  return <PanelTabs label="Пространства" tabs={[['existing',admin ? 'Существующие пространства' : 'Мои и назначенные пространства'],['new','Новое пространство']]} active={tab} onChange={setTab}>
       {error && <p className="error" role="alert">{error}</p>}
       {tab === 'new' && <form className="management-form" onSubmit={event => {
         event.preventDefault();
@@ -100,8 +86,9 @@ export function SpaceManagement({api, admin = false}) {
       {tab === 'existing' && <>
       <label className="space-picker">Пространство<select value={sid} disabled={busy} onChange={e => setSid(e.target.value)}>
         <option value="">Выберите пространство</option>
-        {spaces.map(item => <option key={item.id} value={item.id}>{item.name}{item.archived ? ' · архив' : ''}</option>)}
+        {spaces?.map(item => <option key={item.id} value={item.id}>{item.name}{item.archived ? ' · архив' : ''}</option>)}
       </select></label>
+      {!admin && spaces?.length === 0 && <p>Создайте пространство или попросите администратора назначить вам управление.</p>}
       {space && !space.archived && <>
         <form className="management-form" onSubmit={event => {
           event.preventDefault();
@@ -113,18 +100,6 @@ export function SpaceManagement({api, admin = false}) {
           <label>Описание<textarea value={spaceDescription} maxLength={2000} onChange={e => setSpaceDescription(e.target.value)}/></label>
           <button disabled={busy || (spaceName === space.name && spaceDescription === space.description)}>Сохранить название и описание</button>
         </form>
-        <div className="management-form">
-          <label>Аккаунт<select value={email} onChange={e => setEmail(e.target.value)} disabled={busy}>
-            <option value="">Выберите аккаунт</option>
-            {accounts.map(item => <option key={item.email} value={item.email}>{item.email} · {roleLabels[item.role]}</option>)}
-          </select></label>
-          {account && <>
-            <label><Toggle checked={account.memberships.includes(sid)} disabled={busy} onChange={e => assign(e.target.checked, false)}/> Доступ к разговорам</label>
-            {admin && account.role === 'editor' && account.status === 'active' && <label>
-              <Toggle checked={account.managed.includes(sid)} disabled={busy} onChange={e => assign(e.target.checked, true)}/> Управление пространством
-            </label>}
-          </>}
-        </div>
         {settings && <form className="management-form" onSubmit={event => {
           event.preventDefault();
           run(() => api(`/management/spaces/${sid}/policy`, {
@@ -169,7 +144,7 @@ export function SpaceManagement({api, admin = false}) {
           <label><Toggle checked={settings.review_before_send} onChange={e => setting('review_before_send', e.target.checked)}/> Проверять распознанный текст в голосовом режиме</label>
           <label><Toggle checked={policy.policy.classic_text} onChange={e => field('classic_text', e.target.checked)}/> Показывать текстовый ответ целиком</label>
           <label><Toggle checked={settings.web_search_enabled} disabled={!policy.web_enabled && !settings.web_search_enabled} onChange={e => setting('web_search_enabled', e.target.checked)}/> Использовать Интернет</label>
-          {admin && <label>Сообщений в контексте<input type="number" min={0} max={100} step={2} value={settings.history_messages} onChange={e => setting('history_messages', Number(e.target.value))}/></label>}
+          <label>Сообщений в контексте<input type="number" min={0} max={100} step={2} value={settings.history_messages} onChange={e => setting('history_messages', Number(e.target.value))}/></label>
           {!!policy.bases.length && <fieldset><legend>Подключённые базы знаний</legend>
             <label><Toggle checked={!!policy.policy.rag_enabled}
               onChange={e => field('rag_enabled', e.target.checked)}/> Искать по базам знаний</label>
@@ -178,7 +153,7 @@ export function SpaceManagement({api, admin = false}) {
           </fieldset>}
           <button className="primary" disabled={busy}>Сохранить настройки</button>
         </form>}
-        {admin && <form className="management-form archive-space" onSubmit={event => {
+        <form className="management-form archive-space" onSubmit={event => {
           event.preventDefault();
           run(() => api(`/management/spaces/${sid}/archive`, {method:'POST', body:JSON.stringify({name:confirmation, revision:space.revision})}));
         }}>
@@ -186,7 +161,7 @@ export function SpaceManagement({api, admin = false}) {
           <p>Разговоров: {space.chats}. Участников: {space.members}. Без активных пространств останутся: {space.affected_members}.</p>
           <label>Введите название «{space.name}»<input value={confirmation} onChange={e => setConfirmation(e.target.value)}/></label>
           <button disabled={busy || confirmation !== space.name}>Архивировать</button>
-        </form>}
+        </form>
       </>}
       </>}
   </PanelTabs>;

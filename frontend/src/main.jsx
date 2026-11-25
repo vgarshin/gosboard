@@ -521,22 +521,22 @@ function App() {
   }
 
   if (!bootstrap || initializing) return <div className="loading">{error || 'Подключаем AI Talks…'}</div>;
-  if (!user) return <div className="login-shell"><div className="login-card"><Brand/><span className="eyebrow">ПРОСТРАНСТВО ДЛЯ ДИАЛОГА</span><h1>Начните<br/>с разговора.</h1><p>Ваши мысли. Возможности ИИ.<br/>Текстом или голосом — как вам удобнее.</p>{(error || location.search.includes('auth_error')) && <div role="alert" className="error">{error || 'Вход не выполнен. Проверьте доступ у администратора.'}</div>}{bootstrap.demo ? <form onSubmit={loginDemo}><button className="primary">Открыть локальное демо <ChevronRight size={18}/></button><small>Тестовый ответ и беззвучный аудиофайл. Платные API отключены.</small></form> : <a className="primary" href={bootstrap.login_url}>Войти с Яндекс ID <ChevronRight size={18}/></a>}<div className="login-note"><ShieldCheck size={15}/> Доступ после подтверждения администратором</div></div><div className="login-art"><div className="orb orb-one"/><div className="orb orb-two"/><div className="art-caption">Место, где мысль<br/>обретает голос.<span>AI TALKS / 01</span></div></div></div>;
+  if (!user) return <div className="login-shell"><div className="login-card"><Brand/><span className="eyebrow">ПРОСТРАНСТВО ДЛЯ ДИАЛОГА</span><h1>Начните<br/>с разговора.</h1><p>Ваши мысли. Возможности ИИ.<br/>Текстом или голосом — как вам удобнее.</p>{(error || location.search.includes('auth_error')) && <div role="alert" className="error">{error || 'Вход не выполнен. Проверьте доступ у администратора.'}</div>}{bootstrap.demo ? <form onSubmit={loginDemo}><button className="primary">Открыть локальное демо <ChevronRight size={18}/></button><small>Тестовый ответ и беззвучный аудиофайл. Платные API отключены.</small></form> : <a className="primary login-provider" href={bootstrap.login_url}>Войти с Яндекс ID <ChevronRight size={18}/></a>}{bootstrap.vtb_edu_login_url && <a className="primary login-provider" href={bootstrap.vtb_edu_login_url}>Войти с VTB Edu <ChevronRight size={18}/></a>}<div className="login-note"><ShieldCheck size={15}/> Доступ после подтверждения администратором</div></div><div className="login-art"><div className="orb orb-one"/><div className="orb orb-two"/><div className="art-caption">Место, где мысль<br/>обретает голос.<span>AI TALKS / 01</span></div></div></div>;
 
   const management = <>
-    {spaceManagement && <SpacesPanel api={api} admin={user.admin} onClose={() => {
+    {spaceManagement && user.editor && <SpacesPanel api={api} admin={user.admin} onClose={() => {
       setSpaceManagement(false); api('/spaces').then(setSpaces).catch(e => setError(e.message));
     }}/>}
     {configurationOpen && user.admin && <ConfigurationPanel api={api} config={config} admin onSaved={refreshCatalog} onClose={() => setConfigurationOpen(false)}/>}
     {managementOpen && user.editor && <ManagementPanel api={api} onSource={setSourceChunk} admin={user.admin} onClose={() => {setManagementOpen(false); api('/spaces').then(setSpaces).catch(e => setError(e.message));}}/>}
     {sourceChunk && <SourceModal chunkId={sourceChunk} onClose={() => setSourceChunk(null)}/>}
     {knowledgeOpen && <KnowledgeManager editor onSource={setSourceChunk} api={api} admin={user.admin} initialBases={[]} refresh={refreshCatalog} onClose={() => setKnowledgeOpen(false)}/>}
-    {manualOpen && <UserManual onClose={() => setManualOpen(false)} onHistory={!space && user.status === 'active' ? openHistory : undefined}/>}
+    {manualOpen && <UserManual role={user.role} onClose={() => setManualOpen(false)} onHistory={!space && user.status === 'active' ? openHistory : undefined}/>}
   </>;
 
   if (!space) return <>
     <header className="workspace-header"><Brand/><div className="header-right">
-      {user.admin && <HeaderAction icon={Star} label="Управление" onClick={() => setSpaceManagement(true)}/>}
+      {user.editor && <HeaderAction icon={Star} label="Управление" onClick={() => setSpaceManagement(true)}/>}
       {user.editor && <HeaderAction icon={BookOpen} label="Базы знаний" onClick={() => setKnowledgeOpen(true)}/>}
       {user.editor && <HeaderAction icon={Users} label="Пользователи" onClick={() => setManagementOpen(true)}/>}
       {user.admin && <HeaderAction icon={Settings} label="Настройки" onClick={() => setConfigurationOpen(true)}/>}

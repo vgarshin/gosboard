@@ -3,7 +3,7 @@ import {formatDateTime} from './dateTime';
 import React, {useEffect, useState} from 'react';
 
 const money=value=>new Intl.NumberFormat('ru-RU',{maximumFractionDigits:2}).format(value)+' ₽';
-const kinds={'query-resolution':'Подготовка поискового вопроса',llm:'LLM',stt:'Распознавание речи',tts:'Озвучивание','web-search':'Поиск в интернете','embedding-doc':'Индексация документов','embedding-query':'Поиск по базе знаний'};
+const kinds={'query-resolution':'Выбор источников и подготовка запроса',llm:'LLM',stt:'Распознавание речи',tts:'Озвучивание','web-search':'Поиск в интернете','embedding-doc':'Индексация документов','embedding-query':'Поиск по базе знаний'};
 const states={complete:'Завершено',pending:'В работе',uncertain:'Результат неизвестен'};
 export function BudgetPanel({api}) {
  const [data,setData]=useState(null),[daily,setDaily]=useState(''),[monthly,setMonthly]=useState(''),[busy,setBusy]=useState(false),[error,setError]=useState(''),[notice,setNotice]=useState('');

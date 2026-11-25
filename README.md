@@ -9,12 +9,12 @@ Lightweight Russian-language AI chat with text and voice conversations, persiste
 - **Live dialog:** explicitly start listening, ask a question and pause; the app answers aloud and listens again after playback. Pause/Stop are always available. The microphone is off while answering.
 - **Spaces:** membership controls working access. Each space has its own chats and a policy whose effective settings are captured when a chat is created. Removed or archived memberships leave owner-readable history.
 - **Sources and documents:** managers upload PDF, TXT, DOC and DOCX. Space policies can combine several shared bases with web search. Citation validation precedes sourced speech. Active chat owners can open saved excerpts and follow public web links. Full RAG documents require management access. Exports contain the conversation text.
-- **Configuration:** YandexGPT/Alice model and prompt catalogs, voice settings, history limits, role management and budget controls. Runtime settings are stored in SQLite and changed through the application.
+- **Configuration:** YandexGPT, Alice, DeepSeek and GigaChat model and prompt catalogs, voice settings, history limits, role management and budget controls. Runtime settings are stored in SQLite and changed through the application.
 - **Operations:** local response/audio caching, bounded paid operations, cancellation, chat export (Markdown/TXT/JSON), verified local/S3 backups and restore checks.
 
-Yandex ID provides authentication. First-time accounts wait for administrator approval. Administrators can read user messages through an audited viewer. Assigned editors can manage space policies for new conversations and view existing chat titles and settings in their managed spaces.
+Sign in with Yandex ID or VTB Edu. New accounts await administrator approval unless access was enabled in advance. Space membership and editor management assignments are configured under **Пользователи**. Editors manage the spaces and knowledge bases they own or are assigned. Administrators manage all spaces and bases, maintain the shared instruction for sourced answers, and can read user messages through an audited viewer. See the [role access matrix](docs/guides/2026-11-25-ai-talks-rbac-ru.md).
 
-**Next priority: spoken interruption.** It is planned, not implemented. Current live dialog alternates listening and answering; use Pause/Stop sound, then Resume to clarify. Streaming recognition, Cloud.ru/GigaChat and remote caching remain later work. Compaction and broad answer-quality review remain backlog. See the [live-dialog plan](plans/LIVE_DIALOG_PLAN.md).
+**Next priority: spoken interruption.** It is planned, not implemented. Current live dialog alternates listening and answering; use Pause/Stop sound, then Resume to clarify. Streaming recognition, Remote caching remains later work. Compaction and broad answer-quality review remain backlog. See the [live-dialog plan](plans/LIVE_DIALOG_PLAN.md).
 
 ## Repository layout
 
@@ -86,7 +86,7 @@ Backend requirements and npm dependencies are locked. Optional browser checks ne
 ## Documentation
 
 - [Documentation index](docs/README.md): user guides, operations and architecture references.
-- [User manual source](docs/guides/2026-11-15-ai-talks-user-manual-ru.html): also available through the **?** icon in the app. After editing, run `python3 docs/sync_user_manual.py`; commit the updated bundled copy too.
+- [Role-specific help source](docs/guides/2026-11-15-ai-talks-user-manual-ru.html): the app’s **?** menu selects the user, editor, or administrator version from the session role. After editing, run `python3 docs/sync_user_manual.py`; commit the updated bundled copy too.
 - [Implementation status](docs/IMPLEMENTATION_STATUS.md): current features and historical delivery evidence.
 - [Plans](plans/README.md): roadmap, spoken interruption and deferred compaction.
 - [Agent instructions](AGENTS.md): repository scope, privacy, verification and documentation rules.

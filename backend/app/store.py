@@ -38,6 +38,11 @@ class Store:
                     hash TEXT PRIMARY KEY, user_id TEXT NOT NULL, csrf TEXT NOT NULL, expires REAL NOT NULL);
                 CREATE TABLE IF NOT EXISTS oauth (
                     hash TEXT PRIMARY KEY, state TEXT NOT NULL, verifier TEXT NOT NULL, expires REAL NOT NULL);
+                CREATE TABLE IF NOT EXISTS vtb_edu_oauth (
+                    hash TEXT PRIMARY KEY, state TEXT NOT NULL, verifier TEXT NOT NULL,
+                    nonce TEXT NOT NULL, expires REAL NOT NULL);
+                CREATE TABLE IF NOT EXISTS rag_instruction (
+                    id INTEGER PRIMARY KEY CHECK(id=1), revision INTEGER NOT NULL, instruction TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS chats (
                     id TEXT PRIMARY KEY, user_id TEXT NOT NULL, title TEXT NOT NULL,
                     created REAL NOT NULL, updated REAL NOT NULL);
@@ -304,6 +309,7 @@ class Store:
             db.execute('DELETE FROM cache WHERE expires<?', (now,))
             db.execute('DELETE FROM sessions WHERE expires<?', (now,))
             db.execute('DELETE FROM oauth WHERE expires<?', (now,))
+            db.execute('DELETE FROM vtb_edu_oauth WHERE expires<?', (now,))
             db.execute('DELETE FROM requests WHERE created<?', (now - 7 * 86400,))
             total = db.execute('SELECT coalesce(sum(length(value)),0) FROM cache').fetchone()[0]
             if total > max_bytes:

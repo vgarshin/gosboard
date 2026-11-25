@@ -498,7 +498,10 @@ def test_catalog_remains_admin_owned_and_hidden_from_public_config(setup):
     client, app, provider = setup
     config = client.get('/api/config').json()
     assert not {'models','prompts','knowledge_bases','capabilities'} & config.keys()
-    assert len(client.get('/api/management/spaces/initial/policy').json()['models']) == 3
+    models = client.get('/api/management/spaces/initial/policy').json()['models']
+    assert {model['id'] for model in models} == {
+        'default', 'alice-flash', 'alice-llm', 'deepseek-v4-1-flash', 'gigachat-3', 'gigachat-3-pro',
+    }
     switch_user(client, app, 'another')
     assert client.get('/api/admin/config').status_code == 403
     assert client.get('/api/management/spaces/initial/policy').status_code == 403

@@ -28,8 +28,13 @@
 - Keep only `README.md` and `AGENTS.md` as Markdown files at the repo root. Put feature plans in `plans/`, operational guides in `docs/operations/`, architecture notes in `docs/architecture/`, and user materials in `docs/guides/` or `docs/briefings/`.
 - Maintain `docs/README.md` and `plans/README.md`. Update links when moving files. New documentation must not rely on the parent workspace.
 - Write user-facing materials in plain Russian unless requested otherwise. Distinguish working features, proposals and future work. Do not claim automatic game scoring; judging requires actual team arguments and agreed criteria. Event mechanics require supplied approved requirements.
-- The canonical in-app manual is `docs/guides/2026-11-15-ai-talks-user-manual-ru.html`. Update it when user controls, limits or behavior change; run `python3 docs/sync_user_manual.py` and verify `--check`. Commit the matching `frontend/src/user-manual-ru.html`; never edit only the generated copy or insert user/model HTML into the help component.
+- The canonical in-app manual is `docs/guides/2026-11-15-ai-talks-user-manual-ru.html`. Use `data-roles` on table-of-contents links for role-specific sections. Update it when user controls, limits or behavior change; run `python3 docs/sync_user_manual.py` and verify `--check`. Commit the matching `frontend/src/user-manual-ru.html`; never edit only the generated copy or insert user/model HTML into the help component.
 - Name new user documents `YYYY-MM-DD-ai-talks-<topic>-<language>.*`. Keep editable sources and reproducible builders beside exported PDFs, index them, and check requested page count, Cyrillic readability and layout. Never include secrets/private chats in shared documents.
+
+## Production SSH from the owner's workstation
+
+- Use `ssh -F /home/vgarshin/yadisk/clouds/config aitalks-test-01` for the production host when that owner-provided configuration is available. Pass the same configuration path to SSH-based deployment and backup tools. The server checkout is `/opt/aitalks/app`.
+- Keep workstation SSH configuration and keys outside the repository. In a different environment, use the owner's equivalent configuration and verify the server host key before connecting.
 
 ## Verification
 

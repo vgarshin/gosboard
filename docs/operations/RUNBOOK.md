@@ -11,6 +11,30 @@
 
 The application uses global daily/monthly **reservation caps**, not exact invoice reconciliation. Each cache miss reserves a fixed conservative amount before contacting a provider. TTS reserves per bounded utterance. Failures and cancellations retain reservations because the provider may still charge. The starting values deliberately overestimate typical usage and may exhaust the app cap early. They do not guarantee a provider invoice ceiling; also set provider-side billing alerts/limits. Daily/monthly windows use UTC. The admin screen reports accumulated reservations; detailed rows are available through authenticated `/api/admin/usage`.
 
+## Enable DeepSeek and GigaChat
+
+On an installation with a saved catalog, open **Конфигурация → Общие настройки → Модели в списке** and add these entries to the current revision. Fresh installations load them from `config/app.json`.
+
+| Catalog ID | Display label | Model |
+|---|---|---|
+| `deepseek-v4-1-flash` | DeepSeek V4.1 Flash (Yandex) | `deepseek-v4.1-flash` |
+| `gigachat-3` | GigaChat 3 (Cloud.ru) | `cloudru/ai-sage/GigaChat3-10B-A1.8B` |
+| `gigachat-3-pro` | GigaChat 3 Pro (Cloud.ru) | `cloudru/GigaChat/GigaChat-3-Pro` |
+
+Leave reasoning controls at their defaults. Select the model in the space policy for new chats. Saved chat profiles retain their selected model.
+
+DeepSeek uses the existing AI Studio key and folder. Confirm model access in that folder. [AI Studio model catalog](https://aistudio.yandex.ru/ru/docs/ai-studio/concepts/generation/models)
+
+Create a Foundation Models API key and set `CLOUDRU_API_KEY` in the same ignored application environment. Recreate the backend after changing its environment. [Cloud.ru Foundation Models quickstart](https://cloud.ru/docs/foundation-models/ug/topics/quickstart)
+
+Review the models' tariffs and the shared LLM reservation before enabling them. Selecting GigaChat sends the bounded conversation context and, for sourced turns, selected source excerpts to Cloud.ru. Verify an ordinary reply and a sourced reply with synthetic content in both classic and streaming modes after activation. Keep GigaChat out of the November 27 event space policy per the event plan.
+
+## Space access and RAG instruction
+
+Use **Пользователи → Назначить пространства** for memberships. Admins see a separate **Управление пространствами** set of switches on editor accounts. Editors can manage membership for approved users in their managed spaces. Space policies remain under **Управление**.
+
+The admin-only **Базы знаний → Инструкция RAG** tab saves the shared instruction in SQLite. It affects sourced replies in existing and new chats. Edit with care and check a sourced reply after changes. The application still enforces its citation rules. The backup carries the saved instruction.
+
 ## VM deployment
 
 Production target: SSH alias `aitalks-test-01`. Configure this alias in your own SSH configuration and pass its actual path with `-F`; examples use `~/.ssh/config`.
@@ -60,7 +84,7 @@ Live YandexGPT, TTS, and STT smoke checks passed. The public login button reache
 
 Named `app_data` volume holds SQLite (text history, sessions, usage, local response/audio cache). Raw STT PCM stays in memory and is discarded after recognition. Generated audio expires after 24 hours; the shared local cache has a 1 GB cap and a minute-based cleanup cycle. Expired entries are inaccessible immediately; file-level forensic erasure is not guaranteed by SQLite. Text history persists until deletion. Deleting a chat also clears that user's derived caches/request results. Backups may retain earlier text until their retention expires.
 
-There are no private knowledge bases: stage 2 has a shared global catalog available to all allowed users, with admin-only mutations. This does not share personal chats or their audio.
+Knowledge bases can be shared by space policy. Editors administer only the bases they own or are assigned. Space membership controls use of bases through a chat.
 
 ## Backup and restore
 
@@ -115,9 +139,9 @@ For an initial trusted-operator seed, `scripts/seed_rag.py` runs inside the back
 
 Open **Управление** in the header. Administrators use **Пользователи** to add a primary Yandex email before first login, assign `user` / `editor` / `admin`, or disable access. Initial `.env` allowlists are imported once into SQLite; subsequent changes use this screen, and editing those bootstrap lists does not overwrite database roles. Credentials remain in the unified `.env`. All existing admin emails remain admins at migration; existing non-admin users become users and keep their histories/settings.
 
-Users control their chats, instruction preset, selected base and source switches. Model/voice/reasoning controls are editorial policy. Editors and admins use **Управление → Разговоры** to choose a chat by owner email/title and change only its model/voice/reasoning settings. No message bodies, prior answers, audio or configuration snapshots are provided by these endpoints. Neither role can open another user's normal message/audio/deletion APIs. Role changes or disablement revoke that account's sessions; affected users sign in again. The last enabled administrator who has already signed in cannot be disabled/demoted until another administrator has signed in.
+Users work in spaces where they have chat access. Editors can create spaces and knowledge bases, and manage resources they own or were assigned. Administrators can manage every resource and grant or revoke editor assignments. Chat access is separate from space management. Editors can see chat titles and settings in the spaces they manage. Administrators can read chat contents through the audited viewer. Chat and audio actions remain owner-scoped. Role changes or disablement revoke affected sessions.
 
-Editors can create/manage shared bases and content. Administrators configure RAG policy in **Конфигурация → Настройки RAG**. **Top K документов** limits distinct source files; the separate chunk limit bounds the total fragments included. Context size may produce fewer sources. Chunk changes require the paid-reindex confirmation checkbox; top-K changes require no re-embedding. New defaults match existing chunking/retrieval, so deployment itself does not reindex books.
+Manage per-base search settings from **Базы знаний → Настройки поиска**. Administrators can also configure them in **Настройки → Настройки RAG**. **Top K документов** limits distinct source files; the separate chunk limit bounds the total fragments included. Context size may produce fewer sources. Chunk changes require the paid-reindex confirmation checkbox; top-K changes require no re-embedding. New defaults match existing chunking/retrieval, so deployment itself does not reindex books.
 
 Voice choices include Marina (female) and Filipp (male). Voice changes apply to subsequent synthesis, with distinct audio cache keys; model settings apply to subsequent generated answers. Current catalog models have `reasoning_supported=false`: the UI shows that reasoning settings are unavailable. After separately verifying a model's native API support, an editor/admin may mark reasoning support on the model entry in the live configuration and save. The adapter then sends `reasoningOptions.mode=DISABLED` or `ENABLED_HIDDEN`; it does not invent low/medium/high effort or map effort to temperature. See [Yandex reasoning API](https://aistudio.yandex.ru/en/docs/ai-studio/operations/generation/async-request), [model release notes](https://aistudio.yandex.ru/en/docs/ai-studio/release-notes/) and [SpeechKit voices](https://aistudio.yandex.ru/en/docs/speechkit/tts/voices). Verify support for the exact model/version and endpoint before changing capability flags.
 
@@ -192,7 +216,7 @@ Grounded replies explicitly request Chat Completions JSON-object output. Their i
 
 When RAG or Internet is enabled and the user asks a context-dependent follow-up (for example “Кто его жена?” after discussing Trump), the app first resolves the missing entity from permitted recent chat history. Both RAG and Internet receive the same standalone question, e.g. “Кто жена Дональда Трампа?”. The original question stays in the transcript and the final answer receives normal chat context. Search gets only the resolved question, not the full history. The actual search query is visible in source previews and response retrieval metadata.
 
-History-aware retrieval uses a LangChain RunnableBranch: without usable history, send the current question directly to retrieval; with history, let the model prepare a standalone query for every source-enabled turn. There is no pronoun/keyword classifier. The planner preserves standalone questions, recognizes topic changes, and resolves references/comparisons using the configured recent history within the character budget. Original history is not summarized or truncated to a separate fixed six-message window; oldest whole exchanges are dropped only to fit the planner input budget. Source-marker/URL sanitization and JSON validation are data controls, not linguistic detection rules. Local per-user/per-chat caching lasts ten minutes. A planning cache miss reserves one LLM allowance under query-resolution, even if the model leaves an explicit question unchanged; ordinary answering/search retain separate reservations. With no history (including history_messages=0), no planning call or reservation is made. If the planner cannot resolve an ambiguous request, it asks for an explicit subject before retrieval. Tracing is explicitly disabled for the LangChain runnable. Compaction remains backlog.
+In chats with sources enabled, the selected model decides whether to answer directly, search, or ask a clarifying question. It sees the current message, the enabled source types, and recent whole turns within the configured history and context limits. Search receives only the standalone query. Each routing cache miss reserves one LLM allowance under `query-resolution`, including first turns and chats with history disabled. Routing decisions are cached per user, chat, model and input for ten minutes. Direct answers and sourced generation retain their own reservations. An invalid routing response stops the turn. A search with insufficient evidence keeps the sourced-response policy. Demo mode supplies a fixed search decision to exercise the retrieval pipeline with test data.
 
 ## Verified reasoning modes and Lite retirement
 
@@ -242,7 +266,7 @@ Production communication-mode verification passed for a temporary regular user: 
 
 Add a rightmost question-mark help icon for every signed-in role. Open a scrollable Russian manual above the current chat, with a fixed close header, linked contents, Escape/focus trapping and focus return. Reading/closing help preserves draft, chat and settings and makes no paid requests. Cover chat/history/context/export/privacy; all four Internet/RAG combinations and shared bases; source popups and provisional citation checks; text/voice modes, review/classic controls, cancel/stop/audio unlock, recording/text/TTS limits; model/prompt/voice/speed/reasoning/context settings and role permissions; budget/connectivity troubleshooting. Explicitly distinguish current button-controlled voice from future hands-free live dialog.
 
-Canonical source: ../guides/2026-11-15-ai-talks-user-manual-ru.html. Run python3 docs/sync_user_manual.py after editing, then build the frontend; --check verifies the bundled copy matches. Trusted repository-owned HTML only, never user/model content. Local browser checks pass sections, TOC scrolling, heading/focus trap, close/Escape/focus return, retained draft, mobile viewport/scrolling and no paid calls; frontend production build passes. Frontend-only deployment preserves the backend and existing generation workflows.
+The [canonical help source](../guides/2026-11-15-ai-talks-user-manual-ru.html) contains shared sections and a table of contents with role-specific entries marked by `data-roles`. The popup selects sections from the current session role. Run `python3 docs/sync_user_manual.py` after editing, check it with `--check`, and rebuild the frontend. The popup renders repository-owned HTML. Local browser checks pass sections, TOC scrolling, heading/focus trap, close/Escape/focus return, retained draft, mobile viewport/scrolling and no paid calls; frontend production build passes. Frontend-only deployment preserves the backend and existing generation workflows.
 
 Production manual verification passed for a temporary regular user: help icon, Russian sections, linked navigation and keyboard focus, Escape/close with draft preserved, mobile scrolling and close-button visibility, strict CSP and no paid requests. Temporary account/session removed. Backend was not restarted for this frontend-only release.
 

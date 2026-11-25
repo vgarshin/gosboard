@@ -63,6 +63,8 @@ class Spaces:
                 CREATE TABLE IF NOT EXISTS space_policies (
                     space_id TEXT REFERENCES spaces(id), revision INTEGER NOT NULL, policy TEXT NOT NULL,
                     created REAL NOT NULL, actor TEXT NOT NULL, PRIMARY KEY(space_id,revision));
+                CREATE TABLE IF NOT EXISTS space_owners (
+                    space_id TEXT PRIMARY KEY REFERENCES spaces(id), email TEXT NOT NULL REFERENCES access_accounts(email));
                 CREATE TABLE IF NOT EXISTS space_editors (
                     email TEXT REFERENCES access_accounts(email), space_id TEXT REFERENCES spaces(id),
                     PRIMARY KEY(email,space_id));
@@ -73,11 +75,25 @@ class Spaces:
                 if 'active' not in columns:
                     db.execute(f'ALTER TABLE {table} ADD COLUMN active INTEGER NOT NULL DEFAULT 1')
                     db.execute(f'ALTER TABLE {table} ADD COLUMN revision INTEGER NOT NULL DEFAULT 1')
+            db.execute('''CREATE VIEW IF NOT EXISTS space_managers AS
+                SELECT owner.email, owner.space_id FROM space_owners owner
+                JOIN spaces s ON s.id=owner.space_id WHERE s.archived IS NULL
+                UNION
+                SELECT email, space_id FROM space_editors WHERE active=1''')
             if not db.execute("SELECT 1 FROM access_migrations WHERE name='spaces-v1'").fetchone():
                 db.execute("INSERT INTO spaces(id,name,description,created) VALUES ('initial',?,?,?)",
                            ('Основное пространство', 'Ваши разговоры и история AI Talks', time.time()))
                 db.execute("INSERT INTO space_memberships(email,space_id) SELECT email,'initial' FROM access_accounts WHERE enabled=1")
                 db.execute("INSERT INTO access_migrations VALUES ('spaces-v1')")
+            if not db.execute("SELECT 1 FROM access_migrations WHERE name='space-owners-v1'").fetchone():
+                db.execute('''
+                    INSERT OR IGNORE INTO space_owners(space_id,email)
+                    SELECT s.id,a.email FROM spaces s
+                    JOIN audit_events event ON event.action='space.create' AND event.target=s.id
+                    JOIN users u ON u.id=event.actor JOIN access_accounts a ON a.email=lower(u.email)
+                ''')
+                db.execute("INSERT INTO access_migrations VALUES ('space-owners-v1')")
+
 
     def available(self, email):
         with self.store.connection() as db:
@@ -110,7 +126,7 @@ class Spaces:
                         WHERE other.email=m.email AND other.active=1 AND os.id!=s.id AND os.archived IS NULL
                      )) AS affected_members
                 FROM spaces s WHERE ?='admin' OR EXISTS (
-                    SELECT 1 FROM space_editors e WHERE e.space_id=s.id AND e.email=? AND e.active=1
+                    SELECT 1 FROM space_managers e WHERE e.space_id=s.id AND e.email=?
                 ) ORDER BY s.name,s.id
             """, (current['role'], current['email']))]
 
@@ -122,6 +138,9 @@ class Spaces:
             db.execute('INSERT INTO spaces(id,name,description,created) VALUES (?,?,?,?)',
                        (sid, body.name, body.description, time.time()))
             db.execute('INSERT INTO space_policies VALUES (?,?,?,?,?)', (sid, 1, json.dumps(policy), time.time(), current['id']))
+            db.execute('INSERT INTO space_owners(space_id,email) VALUES (?,?)', (sid, current['email']))
+            if current['role'] == 'editor':
+                db.execute('INSERT INTO space_memberships(email,space_id) VALUES (?,?)', (current['email'], sid))
             self.access.audit(current['id'], 'space.create', sid, {}, db)
         return {'id': sid}
 
@@ -140,7 +159,7 @@ class Spaces:
     def archive(self, sid, body, current):
         with self.store.connection() as db:
             db.execute('BEGIN IMMEDIATE')
-            self.require_role(current, db)
+            self.require_manager(sid, current, db)
             result = db.execute("""
                 UPDATE spaces SET archived=?,revision=revision+1
                 WHERE id=? AND name=? AND revision=? AND archived IS NULL
@@ -159,7 +178,7 @@ class Spaces:
             account = db.execute('SELECT role,enabled FROM access_accounts WHERE email=?', (email,)).fetchone()
             if not account or (current['role'] != 'admin' and (management or account['role'] != 'user' or account['enabled'] != 1)):
                 raise HTTPException(404, 'Аккаунт недоступен для назначения')
-            if management and assigned and (account['role'] != 'editor' or not account['enabled']):
+            if management and assigned and (account['role'] != 'editor' or account['enabled'] != 1):
                 raise HTTPException(422, 'Управление назначается допущенному редактору')
             if assigned:
                 db.execute(f'''
@@ -187,8 +206,13 @@ class Spaces:
                 for row in db.execute(f'SELECT email,space_id FROM {table} WHERE active=1'):
                     if row['space_id'] in visible:
                         assignments[table].setdefault(row['email'], []).append(row['space_id'])
+            owners = {}
+            for row in db.execute('SELECT email,space_id FROM space_owners'):
+                if row['space_id'] in visible:
+                    owners.setdefault(row['email'], []).append(row['space_id'])
         return [{**account, 'memberships': assignments['space_memberships'].get(account['email'], []),
-                 'managed': assignments['space_editors'].get(account['email'], [])} for account in accounts]
+                 'managed': assignments['space_editors'].get(account['email'], []),
+                 'owned': owners.get(account['email'], [])} for account in accounts]
 
     def history(self, current):
         with self.store.connection() as db:
@@ -213,7 +237,7 @@ class Spaces:
         self.require_role(current, db)
         if not db.execute("""
             SELECT 1 FROM spaces s WHERE id=? AND archived IS NULL AND
-            (?='admin' OR EXISTS (SELECT 1 FROM space_editors e WHERE e.space_id=s.id AND e.email=? AND e.active=1))
+            (?='admin' OR EXISTS (SELECT 1 FROM space_managers e WHERE e.space_id=s.id AND e.email=?))
         """, (sid, current['role'], current['email'])).fetchone():
             raise HTTPException(404, 'Управление пространством недоступно')
 

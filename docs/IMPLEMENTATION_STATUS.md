@@ -2,6 +2,28 @@
 
 Documentation reorganized for the standalone repository: 2026-11-17. Feature verification below records the existing delivery; no application deployment is part of this repository preparation.
 
+## Назначение доступа и общая инструкция RAG
+
+В окне «Пользователи» администратор настраивает доступ к разговорам и право управления редактора двумя отдельными блоками. Редактор выдаёт доступ допущенным пользователям в управляемых пространствах. Окно «Управление пространствами» содержит настройки пространств. Права перечислены в [матрице доступа](guides/2026-11-25-ai-talks-rbac-ru.md).
+
+Вкладка «Базы знаний → Инструкция RAG» доступна администраторам. Общая инструкция применяется при следующих ответах с источниками из баз знаний и Интернета. Сервер проверяет цитаты и отклоняет ответы с неверными ссылками.
+
+## Вход через VTB Edu
+
+На aitalks.tech включён корпоративный вход VTB Edu через Yandex Identity Hub. Кнопка располагается под входом через Яндекс ID. При первом успешном входе с подтверждённым адресом @vtb.education новый аккаунт появляется в разделе «Пользователи» со статусом «Ожидает допуска». Если администратор заранее включил запись, применяется назначенная роль. Администратор подтверждает её и назначает пространство. В списке аккаунтов указан способ входа.
+
+На production проверены обе кнопки, переход на страницу Identity Hub и отказ callback без действительного состояния. Подтверждение корпоративной личности, создание заявки и ручной допуск проверены локально с подписанными синтетическими токенами. Для пилота без признака email_verified предусмотрена сверенная по каталогу Identity Hub привязка адреса к идентификатору пользователя.
+
+## Role-specific help and resource permissions
+
+The repository's help popup selects a user, editor, or administrator manual from the signed-in account role. The versions share chat, sources, voice and archive guidance. Editors and administrators see space and knowledge-base operations, with separate sections for their respective permissions.
+
+The resource permissions release is live as of 2026-11-23. Editors can create spaces and knowledge bases and administer the resources they own or are assigned. Administrators can administer every resource and grant or revoke editor assignments. Chat membership is separate. The rollout passed HTTPS and migration checks, along with isolated restore and off-VM checksum verification before and after deployment.
+
+## Source-enabled chat and new models in the repository
+
+In source-enabled chats the selected model decides per turn whether to answer directly, search, or ask a clarifying question. Search routes retain citation validation and report missing evidence. The bootstrap catalog includes DeepSeek V4.1 Flash through Yandex AI Studio and GigaChat 3 and 3 Pro through Cloud.ru. GigaChat 3 Pro is available in the production catalog and passed a synthetic check for ordinary and streaming replies, source routing and citation validation. Existing installations use the revisioned catalog. Provider setup is in the [runbook](operations/RUNBOOK.md#enable-deepseek-and-gigachat).
+
 ## Spaces production release
 
 Spaces and the revised interface were deployed to aitalks.tech on 2026-11-19. The Spaces migration created «Основное пространство» for previously active accounts and materialized existing chat settings. Existing bases remain under administrative management until a manager is assigned. The predeployment archive passed isolated restore checks with both backend versions and was downloaded from private S3 with a matching checksum. At cutover, the database and chat snapshots passed integrity checks. The public HTTPS site served the new frontend, the anonymous Spaces API request returned 401, and the production backup service completed successfully after deployment. OAuth sign-in and physical microphone behavior were not exercised on production in this release.
@@ -22,7 +44,7 @@ Owner-authorized change on 2026-11-15: enabled admins can read all users' messag
 
 ## Current delivery
 
-Internet search can enrich up to two result URLs with bounded public HTML/plain-text passages. Public-only DNS-pinned connections, checked redirects, limited bytes/time/concurrency, private page caches and explicit snippet fallback preserve a small footprint. Source popups distinguish page excerpts from search snippets and show page-fetch dates; saved excerpts/URLs remain in private chat history and exports. Existing combined RAG/web, history-aware queries, budget controls and model policies remain in place. Streaming text and phrase audio are available through the three per-chat communication modes, with independent sound cancellation, grounded-answer validation before speech, local phrase caches and existing budget controls. New UI-created text chats stream by default; classic whole-answer delivery remains a secondary text setting. Spoken interruption, streaming recognition, GigaChat and remote caching remain later work; compaction and broad quality review are backlog.
+Internet search can enrich up to two result URLs with bounded public HTML/plain-text passages. Public-only DNS-pinned connections, checked redirects, limited bytes/time/concurrency, private page caches and explicit snippet fallback preserve a small footprint. Source popups distinguish page excerpts from search snippets and show page-fetch dates; saved excerpts/URLs remain in private chat history and exports. Existing combined RAG/web, history-aware queries, budget controls and model policies remain in place. Streaming text and phrase audio are available through the three per-chat communication modes, with independent sound cancellation, grounded-answer validation before speech, local phrase caches and existing budget controls. New UI-created text chats stream by default; classic whole-answer delivery remains a secondary text setting. Spoken interruption, streaming recognition and remote caching remain later work; compaction and broad quality review are backlog.
 
 ## Live dialog
 

@@ -15,6 +15,10 @@ from .web_search import SEARCH_URL, parse_search_response
 
 LLM_URL = 'https://ai.api.cloud.yandex.net/v1/chat/completions'
 LLM_PROTOCOL = 'yandex-chat-completions-v1'
+YANDEX_UNAVAILABLE = 'Сервис Яндекса недоступен или отклонил запрос. Повторите позже'
+CLOUDRU_PREFIX = 'cloudru/'
+CLOUDRU_PROTOCOL = 'cloudru-chat-completions-v1'
+CLOUDRU_URL = 'https://foundation-models.api.cloud.ru/v1/chat/completions'
 STT_URL = 'https://stt.api.cloud.yandex.net/speech/v1/stt:recognize'
 TTS_URL = 'https://tts.api.cloud.yandex.net/tts/v3/utteranceSynthesis'
 
@@ -29,6 +33,10 @@ DEMO_ANSWER = '''Дворянин. Новые школы дают знания �
 Итог: дворянин — за практическое обучение; боярин — за с оговорками; крестьянин — против без облегчения тягот; иностранец — за. Это демонстрационный текст для проверки интерфейса, а не ответ подключённой модели.'''
 
 
+def completion_protocol(model):
+    return CLOUDRU_PROTOCOL if model.startswith(CLOUDRU_PREFIX) else LLM_PROTOCOL
+
+
 class Providers:
     def __init__(self, settings):
         self.settings = settings
@@ -37,14 +45,14 @@ class Providers:
     async def close(self):
         await self.client.aclose()
 
-    async def request(self, method, url, **kwargs):
+    async def request(self, method, url, *, error_detail=YANDEX_UNAVAILABLE, **kwargs):
         try:
             response = await self.client.request(method, url, **kwargs)
             response.raise_for_status()
             return response
         except (httpx.HTTPError, ValueError):
             # Never return provider response bodies: they may contain prompt data or secrets.
-            raise HTTPException(502, 'Сервис Яндекса недоступен или отклонил запрос. Повторите позже') from None
+            raise HTTPException(502, error_detail) from None
 
     def headers(self, speech=False):
         key = self.settings.speech_key if speech else self.settings.api_key
@@ -64,9 +72,14 @@ class Providers:
 
     async def _complete(self, messages, config, on_delta=None):
         if self.settings.demo:
+            if '[INTENT_ROUTING_SCHEMA_V1]' in messages[0]['text']:
+                question = json.loads(messages[-1]['text'])['question']
+                query = ' '.join(re.sub(r'https?://\S+|\[[DW]\d+\]', '', question).split())[:400]
+                decision = {'route': 'search', 'query': query} if query else {
+                    'route': 'clarify', 'question': 'Какую информацию нужно найти?',
+                }
+                return json.dumps(decision, ensure_ascii=False), {'demo': True}
             await asyncio.sleep(.2)
-            if '[RETRIEVAL_QUERY_SCHEMA_V1]' in messages[0]['text']:
-                return json.dumps({'query':json.loads(messages[-1]['text'])['question']},ensure_ascii=False), {'demo':True}
             if '[RAG_RESPONSE_SCHEMA_V1]' in messages[0]['text']:
                 source_data = messages[0]['text'].split('SOURCE_DATA=', 1)[1]
                 sources = json.loads(source_data)
@@ -75,42 +88,54 @@ class Providers:
                 text = '\n\n'.join(source['excerpt'][:650]+' ['+source['id']+']' for source in chosen)
                 return json.dumps({'supported':True,'answer':text,'used_sources':[source['id'] for source in chosen]},ensure_ascii=False), {'demo': True}
             return DEMO_ANSWER, {'demo': True}
+        protocol = completion_protocol(config.model)
+        unavailable = YANDEX_UNAVAILABLE
+        cloudru = protocol == CLOUDRU_PROTOCOL
         payload = {
-            'model': f'gpt://{self.settings.folder}/{config.model}',
-            'stream': False, 'store': False,
-            'temperature': config.temperature, 'max_completion_tokens': config.max_tokens,
+            'stream': on_delta is not None,
+            'temperature': config.temperature,
             'messages': [{'role': message['role'], 'content': message['text']} for message in messages],
         }
-        if any(marker in messages[0]['text'] for marker in ('[RAG_RESPONSE_SCHEMA_V1]','[RETRIEVAL_QUERY_SCHEMA_V1]')):
+        if any(marker in messages[0]['text'] for marker in ('[RAG_RESPONSE_SCHEMA_V1]', '[INTENT_ROUTING_SCHEMA_V1]')):
             payload['response_format'] = {'type': 'json_object'}
+        if cloudru:
+            if not self.settings.cloudru_api_key:
+                raise HTTPException(503, 'Доступ к Cloud.ru не настроен')
+            url = CLOUDRU_URL
+            unavailable = 'Сервис Cloud.ru недоступен или отклонил запрос. Повторите позже'
+            headers = {'Authorization': f'Bearer {self.settings.cloudru_api_key}'}
+            payload.update(model=config.model.removeprefix(CLOUDRU_PREFIX), max_tokens=config.max_tokens)
+        else:
+            url = LLM_URL
+            headers = {**self.headers(), 'OpenAI-Project': self.settings.folder}
+            payload.update(model=f'gpt://{self.settings.folder}/{config.model}',
+                           store=False, max_completion_tokens=config.max_tokens)
         if config.reasoning_effort != 'default':
-            effort=canonical_reasoning(config.reasoning_effort)
-            if effort not in allowed_reasoning(config):
+            effort = canonical_reasoning(config.reasoning_effort)
+            if cloudru or effort not in allowed_reasoning(config):
                 raise HTTPException(422, 'Модель не поддерживает настройку рассуждений')
             payload['reasoning_effort'] = effort
-        headers = {**self.headers(), 'OpenAI-Project': self.settings.folder}
         if on_delta is not None:
-            payload['stream'] = True
-            return await self._stream_completion(payload, headers, on_delta)
-        response = await self.request('POST', LLM_URL, headers=headers, json=payload)
+            return await self._stream_completion(url, payload, headers, on_delta, protocol)
+        response = await self.request('POST', url, headers=headers, json=payload, error_detail=unavailable)
         try:
             result = response.json()
             choice = result['choices'][0]
             message = choice['message']
             text = message['content']
             # Do not cache truncated answers, tool requests or refusal payloads as successful chat replies.
-            if choice.get('finish_reason') != 'stop' or message.get('refusal') or message.get('tool_calls'):
+            if choice.get('finish_reason') != 'stop' or message.get('refusal') or message.get('tool_calls') or message.get('function_call'):
                 raise ValueError()
             if not isinstance(text, str) or not text.strip() or len(text) > 20000:
                 raise ValueError()
-            return text, {'provider_usage': result.get('usage', {}), 'provider_api': LLM_PROTOCOL, 'provider_model': result.get('model'), 'provider_response_format': payload.get('response_format', {'type':'text'})['type'], 'provider_reasoning_effort': payload.get('reasoning_effort','default')}
+            return text, {'provider_usage': result.get('usage', {}), 'provider_api': protocol, 'provider_model': result.get('model'), 'provider_response_format': payload.get('response_format', {'type':'text'})['type'], 'provider_reasoning_effort': payload.get('reasoning_effort','default')}
         except (KeyError, IndexError, TypeError, ValueError):
             raise HTTPException(502, 'Модель вернула некорректный или незавершённый ответ') from None
 
-    async def _stream_completion(self, payload, headers, on_delta):
+    async def _stream_completion(self, url, payload, headers, on_delta, protocol):
         text, finished, done, usage, model = '', False, False, {}, None
         try:
-            async with self.client.stream('POST', LLM_URL, headers=headers, json=payload) as response:
+            async with self.client.stream('POST', url, headers=headers, json=payload) as response:
                 response.raise_for_status()
                 async for line in response.aiter_lines():
                     if len(line) > 65536:
@@ -151,12 +176,12 @@ class Providers:
                         finished = True
             if not done or not finished or not text.strip():
                 raise ValueError()
-            return text, {'provider_usage': usage, 'provider_api': LLM_PROTOCOL,
+            return text, {'provider_usage': usage, 'provider_api': protocol,
                           'provider_model': model, 'provider_streaming': True,
                           'provider_response_format': payload.get('response_format', {'type':'text'})['type'],
                           'provider_reasoning_effort': payload.get('reasoning_effort','default')}
         except httpx.HTTPError:
-            raise HTTPException(502, 'Поток Яндекса прерван. Проверьте историю перед повтором') from None
+            raise HTTPException(502, 'Поток ответа прерван. Проверьте историю перед повтором') from None
         except (KeyError, IndexError, TypeError, ValueError):
             raise HTTPException(502, 'Модель вернула некорректный или незавершённый поток') from None
 

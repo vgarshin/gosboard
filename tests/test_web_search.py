@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 from app.main import create_app
 from app.web_search import parse_search_response,safe_web_url,WEB_UNSUPPORTED
 from app.rag import validate_rag_answer
+from app.retrieval_query import QUERY_CONTRACT
 from app.settings import Settings
 from test_app import CONFIG,live_settings
 from test_rag import RagProvider,FakeObjects,ready_base,ask
@@ -125,10 +126,11 @@ def test_live_budget_search_cache_and_disabled_costs(tmp_path):
         first=new_chat(c,web=True);assert ask(c,first).status_code==200
         second=new_chat(c,web=True);assert ask(c,second).json()['metadata']['cached']
         assert p.searches==1
-        rows=app.state.store.usage()
-        assert sum(row['kind']=='web-search' for row in rows)==1
         normal=new_chat(c);assert ask(c,normal).status_code==200
         assert p.searches==1
+        rows=app.state.store.usage()
+        assert sum(row['calls'] for row in rows if row['kind']=='web-search')==1
+        assert sum(row['calls'] for row in rows if row['kind']=='query-resolution')==2
 
 
 def test_cancel_while_searching_saves_no_partial_turn(tmp_path):
@@ -147,7 +149,9 @@ def test_cancel_while_searching_saves_no_partial_turn(tmp_path):
             assert (await c.post('/api/requests/'+rid+'/cancel')).json()['cancel_requested']
             assert (await pending).status_code==409
             assert not store.messages(cid) and p.completions==0
-            assert store.usage()[0]['state']=='uncertain'
+            assert {row['kind']: row['state'] for row in store.usage()} == {
+                'query-resolution': 'complete', 'web-search': 'uncertain',
+            }
         await p.close()
     asyncio.run(scenario())
 
@@ -173,27 +177,51 @@ def test_real_provider_contract_and_private_key_scope(tmp_path):
 
 def test_cancel_after_search_before_model_slot(tmp_path):
     class Waiting(SearchProvider):
-        def __init__(self):super().__init__();self.started=asyncio.Event();self.allow=asyncio.Event()
-        async def complete(self,messages,config):
-            self.completions+=1;self.started.set();await self.allow.wait();return 'ordinary response',{}
+        def __init__(self):
+            super().__init__()
+            self.search_started = asyncio.Event()
+            self.allow_search = asyncio.Event()
+            self.slots_full = asyncio.Event()
+            self.allow_generation = asyncio.Event()
+
+        async def search(self, query):
+            self.search_started.set()
+            await self.allow_search.wait()
+            return await super().search(query)
+
+        async def complete(self, messages, config):
+            if QUERY_CONTRACT in messages[0]['text']:
+                return await super().complete(messages, config)
+            self.completions += 1
+            if self.completions == 2:
+                self.slots_full.set()
+            await self.allow_generation.wait()
+            return 'ordinary response', {}
+
     async def scenario():
         s=live_settings(tmp_path);s.web_enabled=True;s.search_key='fake';s.search_folder='test'
         p=Waiting();app=create_app(s,p);store=app.state.store
         store.user('admin','admin@example.com','Admin');token=store.session('admin',3600)
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url=s.origin,cookies={'gosboard_session':token},headers={'Origin':s.origin,'X-CSRF-Token':store.auth(token)['csrf']}) as c:
             ids=[(await c.post('/api/chats')).json()['id'] for _ in range(2)]
-            active=[asyncio.create_task(c.post(f'/api/chats/{cid}/messages',json={'text':'Hold model slot','request_id':str(uuid4())})) for cid in ids]
-            await asyncio.wait_for(p.started.wait(),2)
-            while p.completions<2:await asyncio.sleep(.01)
             await configure_space_async(c, web_search_enabled=True)
             cid=(await c.post('/api/chats')).json()['id'];rid=str(uuid4())
             pending=asyncio.create_task(c.post(f'/api/chats/{cid}/messages',json={'text':'Search before queued generation','request_id':rid}))
-            while p.searches<1:await asyncio.sleep(.01)
-            await asyncio.sleep(.03)
+            await asyncio.wait_for(p.search_started.wait(), 2)
+            active=[asyncio.create_task(c.post(f'/api/chats/{chat_id}/messages',json={'text':'Hold model slot','request_id':str(uuid4())})) for chat_id in ids]
+            await asyncio.wait_for(p.slots_full.wait(), 2)
+            p.allow_search.set()
+
+            async def search_charged():
+                while not any(row['kind'] == 'web-search' and row['state'] == 'complete' for row in store.usage()):
+                    await asyncio.sleep(.01)
+
+            await asyncio.wait_for(search_charged(), 2)
             assert (await c.post('/api/requests/'+rid+'/cancel')).json()['cancel_requested']
             assert (await pending).status_code==409
             assert not store.messages(cid) and p.completions==2
-            p.allow.set();await asyncio.gather(*active)
+            p.allow_generation.set()
+            await asyncio.gather(*active)
         await p.close()
     asyncio.run(scenario())
 

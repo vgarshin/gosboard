@@ -14,6 +14,7 @@ from app.main import create_app
 from app.providers import Providers
 from app.rag import RAG_CONTRACT, UNSUPPORTED, validate_rag_answer
 from app.settings import Settings
+from app.retrieval_query import QUERY_CONTRACT
 from test_app import CONFIG
 from space_helpers import configure_space, stored_answer
 
@@ -46,6 +47,7 @@ class RagProvider(Providers):
     def __init__(self):
         super().__init__(Settings(environment='development', origin=ORIGIN, demo=True))
         self.embeddings = self.completions = 0
+        self.routing_calls = 0
         self.invalid_citation = False
         self.no_support = False
         self.query_version = 'demo-hash-v1'
@@ -57,6 +59,9 @@ class RagProvider(Providers):
         return vector, self.query_version if kind == 'query' else version
 
     async def complete(self, messages, config):
+        if QUERY_CONTRACT in messages[0]['text']:
+            self.routing_calls += 1
+            return await super().complete(messages, config)
         self.completions += 1
         if RAG_CONTRACT in messages[0]['text']:
             if self.invalid_citation:
@@ -459,3 +464,76 @@ def test_invalid_docx_never_embeds(rag_setup, content):
     else:
         assert result.status_code == 422
     assert provider.embeddings == 0
+
+
+@pytest.mark.parametrize(('model_id', 'streaming'), [('alice-llm', False), ('default', True)])
+def test_source_enabled_chat_routes_general_turns_to_selected_model(rag_setup, model_id, streaming):
+    from test_streaming import enable, events
+
+    client, app, provider, _ = rag_setup
+    bid, _, _ = ready_base(client)
+    app.state.web.settings.web_enabled = streaming
+    configure_space(client, base_ids=[bid], model_id=model_id, web_search_enabled=streaming)
+    cid = client.post('/api/chats').json()['id']
+    baseline = provider.embeddings
+    expected_model = 'yandexgpt/latest' if streaming else 'aliceai-llm'
+    routes, answers = [], []
+
+    async def unexpected_search(*args, **kwargs):
+        pytest.fail('A general turn must skip retrieval')
+
+    provider.search = unexpected_search
+
+    async def ordinary_reply(messages, config):
+        assert config.model == expected_model
+        if QUERY_CONTRACT in messages[0]['text']:
+            routes.append(json.loads(messages[-1]['text'])['question'])
+            return '{"route":"direct"}', {}
+        assert RAG_CONTRACT not in messages[0]['text']
+        answers.append(messages[-1]['text'])
+        return f'Ответ модели на сообщение «{answers[-1]}».', {}
+
+    provider.complete = ordinary_reply
+    if streaming:
+        enable(client, cid)
+    prompts = ['Привет, давно не виделись!', 'Придумай метафору для терпения.']
+    for prompt in prompts:
+        if streaming:
+            frames = events(client.post(f'/api/chats/{cid}/messages/stream',
+                                        json={'text': prompt, 'request_id': str(uuid4())}))
+            assert frames[-1]['event'] == 'done', frames
+            assert any(frame['event'] == 'delta' for frame in frames)
+        else:
+            assert ask(client, cid, prompt).status_code == 200
+        answer = stored_answer(client, cid)
+        assert answer['text'] == f'Ответ модели на сообщение «{prompt}».'
+        assert answer['metadata']['citations'] == []
+    assert routes == answers == prompts
+    assert provider.embeddings == baseline
+
+
+def test_shared_rag_instruction_applies_to_existing_chat_and_preserves_validation(rag_setup):
+    client, app, provider, _ = rag_setup
+    base, _, _ = ready_base(client)
+    chat = rag_chat(client, base)
+    route = '/api/admin/rag/instruction'
+    initial = client.get(route).json()
+    assert initial == {'instruction': RAG_CONTRACT, 'revision': 0}
+    assert client.put(route, json={'instruction': '  ', 'expected_revision': 0}).status_code == 422
+    instruction = 'Общая инструкция для ответов с источниками'
+    update = {'instruction': instruction, 'expected_revision': 0}
+    assert client.put(route, json=update).json() == {'instruction': instruction, 'revision': 1}
+    assert client.put(route, json=update).status_code == 409
+
+    complete = provider.complete
+
+    async def with_invalid_citation(messages, config):
+        prompt = messages[0]['text']
+        if '[RAG_RESPONSE_SCHEMA_V1]' in prompt:
+            assert instruction in prompt and RAG_CONTRACT not in prompt
+            return '{"supported":true,"answer":"Непроверенный факт [D99]","used_sources":["D99"]}', {}
+        return await complete(messages, config)
+
+    provider.complete = with_invalid_citation
+    assert ask(client, chat).status_code == 502
+    assert app.state.store.messages(chat) == []

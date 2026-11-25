@@ -1,4 +1,6 @@
 from dataclasses import dataclass, field
+import json
+import re
 import os
 from pathlib import Path
 from urllib.parse import urlparse
@@ -6,6 +8,22 @@ from urllib.parse import urlparse
 
 def emails(name):
     return {v.strip().lower() for v in os.getenv(name, '').split(',') if v.strip()}
+
+
+def vtb_edu_subjects():
+    raw = os.getenv('VTB_EDU_PINNED_SUBJECTS') or '{}'
+    try:
+        mapping = json.loads(raw)
+        if not isinstance(mapping, dict) or any(
+            not re.fullmatch(r'[^\s@<>]+@vtb\.education', email)
+            or email != email.lower() or not isinstance(subject, str)
+            or not 1 <= len(subject) <= 255 or subject != subject.strip()
+            for email, subject in mapping.items()
+        ) or len(set(mapping.values())) != len(mapping):
+            raise ValueError()
+        return mapping
+    except ValueError:
+        raise ValueError('Invalid VTB_EDU_PINNED_SUBJECTS') from None
 
 
 @dataclass
@@ -19,8 +37,15 @@ class Settings:
     admins: set = field(default_factory=lambda: emails('ADMIN_EMAILS'))
     oauth_id: str = field(default_factory=lambda: os.getenv('YANDEX_OAUTH_CLIENT_ID', ''))
     oauth_secret: str = field(default_factory=lambda: os.getenv('YANDEX_OAUTH_CLIENT_SECRET', ''))
+    vtb_edu_enabled: bool = field(default_factory=lambda: os.getenv('VTB_EDU_ENABLED', 'false').lower() == 'true')
+    vtb_edu_client_id: str = field(default_factory=lambda: os.getenv('VTB_EDU_CLIENT_ID', ''))
+    vtb_edu_client_secret: str = field(default_factory=lambda: os.getenv('VTB_EDU_CLIENT_SECRET', ''), repr=False)
+    vtb_edu_discovery_url: str = field(default_factory=lambda: os.getenv('VTB_EDU_DISCOVERY_URL', ''))
+    vtb_edu_issuer: str = field(default_factory=lambda: os.getenv('VTB_EDU_ISSUER', ''))
+    vtb_edu_pinned_subjects: dict[str, str] = field(default_factory=vtb_edu_subjects, repr=False)
     folder: str = field(default_factory=lambda: os.getenv('YANDEX_CLOUD_FOLDER_ID', ''))
     api_key: str = field(default_factory=lambda: os.getenv('YANDEX_AI_API_KEY', ''))
+    cloudru_api_key: str = field(default_factory=lambda: os.getenv('CLOUDRU_API_KEY', ''), repr=False)
     speech_key: str = field(default_factory=lambda: os.getenv('YANDEX_SPEECHKIT_API_KEY', ''))
     daily_limit: float = field(default_factory=lambda: float(os.getenv('DAILY_LIMIT_RUB', '500')))
     monthly_limit: float = field(default_factory=lambda: float(os.getenv('MONTHLY_LIMIT_RUB', '5000')))
@@ -55,6 +80,12 @@ class Settings:
     @property
     def secure(self):
         return urlparse(self.origin).scheme == 'https'
+
+    @property
+    def vtb_edu_ready(self):
+        return self.vtb_edu_enabled and not self.demo and self.secure and all((
+            self.vtb_edu_client_id, self.vtb_edu_client_secret, self.vtb_edu_discovery_url, self.vtb_edu_issuer,
+        ))
 
     def validate(self):
         parsed = urlparse(self.origin)

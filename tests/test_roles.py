@@ -46,7 +46,7 @@ def test_roles_enforced_and_editor_metadata_only(roles):
     assert c.post('/api/chats',json={'voice':'filipp'}).status_code==422
     login('editor')
     assert c.get('/api/editor/chats').json()==[]
-    assert c.post('/api/knowledge-bases',json={'name':'denied'}).status_code==403
+    assert c.post('/api/knowledge-bases',json={'name':'Editor base without space assignment'}).status_code==200
     login('admin')
     assert c.put('/api/management/spaces/initial/assignments',json={
         'email':'editor@example.com','assigned':True,'management':True,
@@ -60,7 +60,7 @@ def test_roles_enforced_and_editor_metadata_only(roles):
     assert c.get('/api/admin/users').status_code==403
     bid=c.post('/api/knowledge-bases',json={'name':'Shared editorial base'}).json()['id']
     did=upload(c,bid)['id'];wait_document(c,bid,did)
-    assert c.put(f'/api/knowledge-bases/{bid}/policy',json={'top_k':2}).status_code==403
+    assert c.put(f'/api/knowledge-bases/{bid}/policy',json={'top_k':2}).status_code==200
     login('user')
     assert c.get(f'/api/knowledge-bases/{bid}/documents').status_code==403
     assert c.post(f'/api/chats/{cid}/messages/{app.state.store.messages(cid)[-1]["id"]}/speech',json={'request_id':str(uuid4())}).status_code==200
@@ -174,3 +174,96 @@ def test_disable_user_cancels_inflight_generation(tmp_path):
             for client in clients:await client.aclose()
             await p.close()
     asyncio.run(scenario())
+
+
+def test_knowledge_base_manager_picker_lists_approved_editors_and_independent_assignments(roles):
+    client, _, _, _, login, _ = roles
+    login('admin')
+    for email, enabled in [('second-editor@example.com', True), ('disabled-editor@example.com', False)]:
+        response = client.put('/api/admin/users', json={'email': email, 'role': 'editor', 'enabled': enabled})
+        assert response.status_code == 200
+
+    base = client.post('/api/knowledge-bases', json={'name': 'Manager picker'}).json()['id']
+    path = f'/api/knowledge-bases/{base}/managers'
+    emails = ['editor@example.com', 'second-editor@example.com']
+    assert client.get(path).json() == [
+        {'email': email, 'assigned': False, 'owner': False} for email in emails
+    ]
+    for email in emails:
+        assert client.put(path, json={'email': email, 'assigned': True}).status_code == 200
+    assert client.get(path).json() == [
+        {'email': email, 'assigned': True, 'owner': False} for email in emails
+    ]
+    assert client.put(path, json={'email': emails[0], 'assigned': False}).status_code == 200
+    assert [row['assigned'] for row in client.get(path).json()] == [False, True]
+    assert client.put(path, json={'email': 'disabled-editor@example.com', 'assigned': True}).status_code == 422
+
+    login('editor')
+    assert client.get(path).status_code == 403
+    login('user')
+    assert client.get(path).status_code == 403
+
+
+def test_space_and_knowledge_base_management_scope(roles):
+    client, _, _, _, login, _ = roles
+    email = 'editor@example.com'
+    spaces = '/api/management/spaces'
+    bases = '/api/knowledge-bases'
+    login('admin')
+    assigned_space = client.post(spaces, json={'name': 'Assigned space'}).json()['id']
+    other_space = client.post(spaces, json={'name': 'Other space'}).json()['id']
+    assigned_base = client.post(bases, json={'name': 'Assigned base'}).json()['id']
+    other_base = client.post(bases, json={'name': 'Other base'}).json()['id']
+    assert client.put(f'{spaces}/{assigned_space}/assignments', json={
+        'email': email, 'assigned': True, 'management': True,
+    }).status_code == 200
+    assert client.put(f'{bases}/{assigned_base}/managers', json={
+        'email': email, 'assigned': True,
+    }).status_code == 200
+
+    login('editor')
+    created_space = client.post(spaces, json={'name': 'Created space'}).json()['id']
+    created_base = client.post(bases, json={'name': 'Created base'}).json()['id']
+    assert {space['id'] for space in client.get(spaces).json()} == {created_space, assigned_space}
+    assert created_space in {space['id'] for space in client.get('/api/spaces').json()}
+    assert {base['id'] for base in client.get(bases).json()} == {created_base, assigned_base}
+    assert client.put(f'{spaces}/{other_space}?revision=1', json={'name': 'Forbidden'}).status_code == 404
+    assert client.post(f'{spaces}/{other_space}/archive', json={'name': 'Other space', 'revision': 1}).status_code == 404
+    assert client.put(f'{bases}/{other_base}/policy', json={'top_k': 2}).status_code == 404
+    assert client.post(f'{bases}/{other_base}/revoke').status_code == 404
+    assert client.post(f'{bases}/{other_base}/reindex').status_code == 404
+    assert client.delete(f'{bases}/{other_base}').status_code == 404
+
+    policy_path = f'{spaces}/{assigned_space}/policy'
+    policy = client.get(policy_path).json()['policy']
+    policy['settings']['history_messages'] = 10
+    assert client.put(policy_path, json={'revision': 1, 'policy': policy}).status_code == 200
+    assert client.post(f'{spaces}/{assigned_space}/archive', json={
+        'name': 'Assigned space', 'revision': 2,
+    }).status_code == 200
+    assert client.put(f'{bases}/{assigned_base}/policy', json={'top_k': 2}).status_code == 200
+    assert client.post(f'{bases}/{assigned_base}/revoke').status_code == 200
+    assert client.delete(f'{bases}/{created_base}').status_code == 200
+
+    login('admin')
+    assert {space['id'] for space in client.get(spaces).json()} >= {created_space, assigned_space, other_space}
+    assert client.post(f'{spaces}/{created_space}/archive', json={
+        'name': 'Created space', 'revision': 1,
+    }).status_code == 200
+    assert client.put(f'{bases}/{other_base}/policy', json={'top_k': 2}).status_code == 200
+    assert client.delete(f'{bases}/{assigned_base}').status_code == 200
+
+    login('user')
+    assert client.post(spaces, json={'name': 'Forbidden'}).status_code == 403
+    assert client.post(bases, json={'name': 'Forbidden'}).status_code == 403
+
+
+def test_only_admin_can_read_and_edit_rag_instruction(roles):
+    client, _, _, _, login, _ = roles
+    path = '/api/admin/rag/instruction'
+    for role in ('user', 'editor'):
+        login(role)
+        assert client.get(path).status_code == 403
+        assert client.put(path, json={'instruction': 'Тест', 'expected_revision': 0}).status_code == 403
+    login('admin')
+    assert client.get(path).status_code == 200
